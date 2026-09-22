@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <span>
+#include <string_view>
 
 #ifdef _MSC_VER
 using ssize_t = intptr_t;
@@ -18,11 +19,25 @@ using ssize_t = intptr_t;
 
     /* contains name and value of a header (name == NULL if is a continuing line
     * of a multiline header */
-struct phr_header {
-    const char* name;
-    size_t name_len;
-    const char* value;
-    size_t value_len;
+struct phr_header 
+{
+    std::string_view name;
+    std::string_view value;
+};
+
+enum class parse_ec
+{
+    ok,
+    failed = -1,
+    partial = -2,
+};
+
+struct parse_result
+{
+    parse_ec ec;
+    size_t bsz;// number of bytes consumed.
+
+    size_t num_headers;
 };
 
 /* returns number of bytes consumed if successful, -2 if request is partial,
@@ -35,7 +50,7 @@ int phr_parse_response(const char* _buf, size_t len, int* minor_version, int* st
     struct phr_header* headers, size_t* num_headers, size_t last_len);
 
 /* ditto */
-int phr_parse_headers(const char* buf, size_t len, struct phr_header* headers, size_t* num_headers, size_t last_len);
+parse_result phr_parse_headers(const std::span<const char> buf, std::span<phr_header> headers, size_t last_len);
 
 
 enum class ChunkedState 
@@ -51,7 +66,8 @@ enum class ChunkedState
 };
 
 /* should be zero-filled before start */
-struct phr_chunked_decoder {
+struct phr_chunked_decoder 
+{
     size_t bytes_left_in_chunk; /* number of bytes left in current chunk */
     bool consume_trailer;       /* if trailing headers should be consumed */
     size_t _hex_count;
@@ -60,16 +76,18 @@ struct phr_chunked_decoder {
     uint64_t _total_overhead;
 };
 
-/* the function rewrites the buffer given as (buf, bufsz) removing the chunked-
-    * encoding headers.  When the function returns without an error, bufsz is
+/* the function rewrites the buffer given as (buf) removing the chunked-
+    * encoding headers.  When the function returns without an error, buf_len is
     * updated to the length of the decoded data available.  Applications should
     * repeatedly call the function while it returns -2 (incomplete) every time
     * supplying newly arrived data.  If the end of the chunked-encoded data is
     * found, the function returns a non-negative number indicating the number of
-    * octets left undecoded, that starts from the offset returned by `*bufsz`.
+    * octets left undecoded, that starts from the offset returned by left_sz.
     * Returns -1 on error.
     */
+
 enum class chunked_errc { error_occur = -1, incomplete = -2 };
+
 struct phr_decode_chunked_result
 {
     ptrdiff_t left_sz; // number of octet left undecoded.
@@ -78,8 +96,8 @@ struct phr_decode_chunked_result
     size_t buf_len;//available decoded data length
 
     //compare only left_sz and ec.
-    constexpr friend 
-    bool operator == (const phr_decode_chunked_result& lhs, const phr_decode_chunked_result& rhs) noexcept
+    friend 
+    constexpr bool operator == (const phr_decode_chunked_result& lhs, const phr_decode_chunked_result& rhs) noexcept
     {
         return lhs.left_sz == rhs.left_sz && lhs.ec == rhs.ec;
     }

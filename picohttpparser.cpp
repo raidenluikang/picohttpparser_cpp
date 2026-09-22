@@ -100,9 +100,12 @@
     } while (0)
 
 
-namespace { // anonymous namespace
+// anonymous namespace
+namespace 
+{ 
 
-static const char* token_char_map = "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+constexpr char token_char_map[] =
+"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
 "\0\1\0\1\1\1\1\1\0\0\1\1\0\1\1\0\1\1\1\1\1\1\1\1\1\1\0\0\0\0\0\0"
 "\0\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\0\0\0\1\1"
 "\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\0\1\0\1\0"
@@ -205,28 +208,43 @@ FOUND_CTL:
     return buf;
 }
 
+
 static const char* is_complete(const char* buf, const char* buf_end, size_t last_len, int* ret)
 {
     int ret_cnt = 0;
     buf = last_len < 3 ? buf : buf + last_len - 3;
 
-    while (1) {
-        CHECK_EOF();
-        if (*buf == '\015') {
+    while (buf != buf_end) 
+    {
+        if (*buf == '\015') 
+        {
             ++buf;
-            CHECK_EOF();
-            EXPECT_CHAR('\012');
+            if (buf == buf_end)
+            {
+                *ret = -2;
+                return NULL;
+            }
+
+            //EXPECT_CHAR('\012');
+            if (*buf++ != '\012') 
+            {
+               * ret = -1;                                                                                                                 
+                return NULL;                                                                                                               
+            }
             ++ret_cnt;
         }
         else if (*buf == '\012') {
             ++buf;
             ++ret_cnt;
         }
-        else {
+        else 
+        {
             ++buf;
             ret_cnt = 0;
         }
-        if (ret_cnt == 2) {
+        
+        if (ret_cnt == 2) 
+        {
             return buf;
         }
     }
@@ -260,7 +278,8 @@ static const char* parse_token(const char* buf, const char* buf_end, const char*
 {
     /* We use pcmpestri to detect non-token characters. This instruction can take no more than eight character ranges (8*2*8=128
      * bits that is the size of a SSE register). Due to this restriction, characters `|` and `~` are handled in the slow loop. */
-    static const char ALIGNED(16) ranges[] = "\x00 "  /* control chars and up to SP */
+    static const char ALIGNED(16) ranges[] = 
+        "\x00 "  /* control chars and up to SP */
         "\"\""   /* 0x22 */
         "()"     /* 0x28,0x29 */
         ",,"     /* 0x2c */
@@ -269,12 +288,17 @@ static const char* parse_token(const char* buf, const char* buf_end, const char*
         "[]"     /* 0x5b-0x5d */
         "{\xff"; /* 0x7b-0xff */
     const char* buf_start = buf;
+    
     int found;
+    
     buf = findchar_fast(buf, buf_end, ranges, sizeof(ranges) - 1, &found);
+    
     if (!found) {
         CHECK_EOF();
     }
-    while (1) {
+    
+    while (1) 
+    {
         if (*buf == next_char) {
             break;
         }
@@ -330,10 +354,16 @@ static const char* parse_headers(const char* buf, const char* buf_end, struct ph
         if (!(*num_headers != 0 && (*buf == ' ' || *buf == '\t'))) {
             /* parsing name, but do not discard SP before colon, see
              * http://www.mozilla.org/security/announce/2006/mfsa2006-33.html */
-            if ((buf = parse_token(buf, buf_end, &headers[*num_headers].name, &headers[*num_headers].name_len, ':', ret)) == NULL) {
+            const char* name  = headers[*num_headers].name.data();
+            size_t len = headers[*num_headers].name.length();
+            buf = parse_token(buf, buf_end, &name, &len, ':', ret);
+            
+            headers[*num_headers].name = std::string_view(name, len);
+
+            if (buf == NULL) {
                 return NULL;
             }
-            if (headers[*num_headers].name_len == 0) {
+            if (len == 0) {
                 *ret = -1;
                 return NULL;
             }
@@ -346,8 +376,8 @@ static const char* parse_headers(const char* buf, const char* buf_end, struct ph
             }
         }
         else {
-            headers[*num_headers].name = NULL;
-            headers[*num_headers].name_len = 0;
+            headers[*num_headers].name = std::string_view{};
+            
         }
         const char* value;
         size_t value_len;
@@ -362,8 +392,9 @@ static const char* parse_headers(const char* buf, const char* buf_end, struct ph
                 break;
             }
         }
-        headers[*num_headers].value = value;
-        headers[*num_headers].value_len = value_end - value;
+        
+        headers[*num_headers].value = std::string_view{ value, (size_t)(value_end - value) };
+        //headers[*num_headers].value_len = value_end - value;
     }
     return buf;
 }
@@ -848,26 +879,37 @@ int phr_parse_response(const char* buf_start, size_t len, int* minor_version, in
 
     return (int)(buf - buf_start);
 }
-int phr_parse_headers(const char* buf_start, size_t len, struct phr_header* headers, size_t* num_headers, size_t last_len)
-{
-    const char* buf = buf_start, * buf_end = buf + len;
-    size_t max_headers = *num_headers;
-    int r;
 
-    *num_headers = 0;
+parse_result phr_parse_headers(const std::span<const char> buf_start, std::span<phr_header> headers, size_t last_len)
+{
+    const char* buf = buf_start.data(), * buf_end = buf + buf_start.size();
+    size_t max_headers = headers.size();
+    
+    parse_result result{};
+
+    int r = 0;
 
     /* if last_len != 0, check if the response is complete (a fast countermeasure
        against slowloris */
     if (last_len != 0 && is_complete(buf, buf_end, last_len, &r) == NULL) {
-        return r;
+        result.ec = static_cast<parse_ec>(r);
+        return result;
+        //return r;
+    }
+    size_t num_headers = 0;
+
+    if ((buf = parse_headers(buf, buf_end, headers.data(), &num_headers, max_headers, &r)) == NULL) {
+        result.num_headers = num_headers;
+        result.ec = static_cast<parse_ec>(r);
+        return result;
     }
 
-    if ((buf = parse_headers(buf, buf_end, headers, num_headers, max_headers, &r)) == NULL) {
-        return r;
-    }
-
-    return (int)(buf - buf_start);
+    result.num_headers = num_headers;
+    result.ec = parse_ec::ok;
+    result.bsz = (size_t)(buf - buf_start.data());
+    return result;
 }
+
 int phr_parse_request(const char* buf_start, size_t len, const char** method, size_t* method_len, const char** path,
     size_t* path_len, int* minor_version, struct phr_header* headers, size_t* num_headers, size_t last_len)
 {
