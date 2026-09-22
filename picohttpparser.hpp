@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include <compare>
+#include <span>
 
 #ifdef _MSC_VER
 using ssize_t = intptr_t;
@@ -38,7 +38,7 @@ int phr_parse_response(const char* _buf, size_t len, int* minor_version, int* st
 int phr_parse_headers(const char* buf, size_t len, struct phr_header* headers, size_t* num_headers, size_t last_len);
 
 
-enum class ChunkedState : unsigned char
+enum class ChunkedState 
 {
     chunk_size,
     chunk_ext,
@@ -48,21 +48,13 @@ enum class ChunkedState : unsigned char
     chunk_data_expect_lf,
     trailers_line_head,
     trailers_line_middle
-    //CHUNKED_IN_CHUNK_SIZE,
-    //CHUNKED_IN_CHUNK_EXT,
-    //CHUNKED_IN_CHUNK_HEADER_EXPECT_LF,
-    //CHUNKED_IN_CHUNK_DATA,
-    //CHUNKED_IN_CHUNK_DATA_EXPECT_CR,
-    //CHUNKED_IN_CHUNK_DATA_EXPECT_LF,
-    //CHUNKED_IN_TRAILERS_LINE_HEAD,
-    //CHUNKED_IN_TRAILERS_LINE_MIDDLE
 };
 
 /* should be zero-filled before start */
 struct phr_chunked_decoder {
     size_t bytes_left_in_chunk; /* number of bytes left in current chunk */
-    char consume_trailer;       /* if trailing headers should be consumed */
-    char _hex_count;
+    bool consume_trailer;       /* if trailing headers should be consumed */
+    size_t _hex_count;
     ChunkedState _state;
     uint64_t _total_read;
     uint64_t _total_overhead;
@@ -80,13 +72,20 @@ struct phr_chunked_decoder {
 enum class chunked_errc { error_occur = -1, incomplete = -2 };
 struct phr_decode_chunked_result
 {
-    ptrdiff_t bufsz;
+    ptrdiff_t left_sz; // number of octet left undecoded.
     chunked_errc ec;
 
-    auto operator <=> (const phr_decode_chunked_result& other) const = default;
+    size_t buf_len;//available decoded data length
+
+    //compare only left_sz and ec.
+    constexpr friend 
+    bool operator == (const phr_decode_chunked_result& lhs, const phr_decode_chunked_result& rhs) noexcept
+    {
+        return lhs.left_sz == rhs.left_sz && lhs.ec == rhs.ec;
+    }
 };
 
-phr_decode_chunked_result phr_decode_chunked(struct phr_chunked_decoder* decoder, char* buf, size_t* bufsz);
+phr_decode_chunked_result phr_decode_chunked(struct phr_chunked_decoder& decoder, const std::span<char> buf);
 
 /* returns if the chunked decoder is in middle of chunked data */
 bool phr_decode_chunked_is_in_data(const struct phr_chunked_decoder& decoder);

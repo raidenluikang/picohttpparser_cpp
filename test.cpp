@@ -386,42 +386,49 @@ static void test_headers(struct picotest::test_t& test)
  
 }
 
-static void test_chunked_at_once(int line, int consume_trailer, const char* encoded, const char* decoded, struct phr_decode_chunked_result expected, struct picotest::test_t& test)
+static void test_chunked_at_once(int line, bool consume_trailer, const char* encoded, const char* decoded, struct phr_decode_chunked_result expected, struct picotest::test_t& test)
 {
     struct phr_chunked_decoder dec = { 0 };
-    char* buf;
-    size_t bufsz;
+    //char* buf;
+    //size_t bufsz;
     //ssize_t ret;
 
     dec.consume_trailer = consume_trailer;
 
     test.note(std::format("testing at-once, source at line {}", line));
 
-    buf = _strdup(encoded);
-    bufsz = strlen(buf);
+    //buf = _strdup(encoded);
+    //bufsz = strlen(buf);
+    
+    std::string buf = encoded;
 
-    auto ret = phr_decode_chunked(&dec, buf, &bufsz);
+    auto ret = phr_decode_chunked(dec, buf);
 
     test.OK(ret == expected);
-    test.OK(bufsz == strlen(decoded));
-    test.OK(bufis(buf, bufsz, decoded));
+    test.OK(ret.buf_len == strlen(decoded));
+    test.OK(bufis(buf.data(), ret.buf_len, decoded));
     
     if (expected.ec == chunked_errc{}) 
     {
         if (ret == expected)
-            test.OK(bufis(buf + bufsz, ret.bufsz, encoded + strlen(encoded) - ret.bufsz));
+            test.OK(bufis(buf.data() + ret.buf_len, ret.left_sz, encoded + strlen(encoded) - ret.left_sz));
         else
             test.OK(false);
     }
 
-    free(buf);
+    //free(buf);
 }
 
-static void test_chunked_per_byte(int line, int consume_trailer, const char* encoded, const char* decoded, struct phr_decode_chunked_result expected, struct picotest::test_t& test)
+static void test_chunked_per_byte(int line, bool consume_trailer, const char* encoded, const char* decoded, struct phr_decode_chunked_result expected, struct picotest::test_t& test)
 {
     struct phr_chunked_decoder dec = { 0 };
     char* buf = (char*) malloc(strlen(encoded) + 1);
-    size_t bytes_to_consume = strlen(encoded) - (expected.ec == chunked_errc{} ? expected.bufsz : 0), bytes_ready = 0, bufsz, i;
+    
+    size_t bytes_to_consume = strlen(encoded) - (expected.ec == chunked_errc{} ? expected.left_sz : 0);
+    size_t bytes_ready = 0;
+    size_t bufsz;
+    size_t i;
+
     struct phr_decode_chunked_result ret;
 
     dec.consume_trailer = consume_trailer;
@@ -431,25 +438,28 @@ static void test_chunked_per_byte(int line, int consume_trailer, const char* enc
     for (i = 0; i < bytes_to_consume - 1; ++i) {
         buf[bytes_ready] = encoded[i];
         bufsz = 1;
-        ret = phr_decode_chunked(&dec, buf + bytes_ready, &bufsz);
+        ret = phr_decode_chunked(dec, std::span<char>(buf + bytes_ready, bufsz) );
         if (ret.ec != chunked_errc::incomplete) {
             test.OK(false);
             goto cleanup;
         }
+        bufsz = ret.buf_len;
         bytes_ready += bufsz;
     }
     strcpy(buf + bytes_ready, encoded + bytes_to_consume - 1);
     bufsz = strlen(buf + bytes_ready);
-    ret = phr_decode_chunked(&dec, buf + bytes_ready, &bufsz);
+    
+    ret = phr_decode_chunked(dec, std::span<char>(buf + bytes_ready, bufsz) );
+    
     test.OK(ret == expected);
-    bytes_ready += bufsz;
+    bytes_ready += ret.buf_len;
     test.OK(bytes_ready == strlen(decoded));
     test.OK(bufis(buf, bytes_ready, decoded));
     
     if (expected.ec == chunked_errc{}) 
     {
         if (ret == expected)
-            test.OK(bufis(buf + bytes_ready, expected.bufsz, encoded + bytes_to_consume));
+            test.OK(bufis(buf + bytes_ready, expected.left_sz, encoded + bytes_to_consume));
         else
             test.OK(false);
     }
@@ -461,43 +471,47 @@ cleanup:
 static void test_chunked_failure(int line, const char* encoded, struct phr_decode_chunked_result expected, struct picotest::test_t& test)
 {
     struct phr_chunked_decoder dec = { 0 };
-    char* buf = _strdup(encoded);
-    size_t bufsz, i;
+    //char* buf = _strdup(encoded);
+    //size_t bufsz, i;
     struct phr_decode_chunked_result ret;
+    
+    std::string buf = encoded;
 
     test.note(std::format("testing failure at-once, source at line {}", line));
-    bufsz = strlen(buf);
-    ret = phr_decode_chunked(&dec, buf, &bufsz);
+    //bufsz = strlen(buf);
+    ret = phr_decode_chunked(dec, buf);
     test.OK(ret == expected);
 
     test.note(std::format("testing failure per-byte, source at line {}", line));
 
     memset(&dec, 0, sizeof(dec));
     
-    for (i = 0; encoded[i] != '\0'; ++i) 
+    for (size_t i = 0; encoded[i] != '\0'; ++i) 
     {
         buf[0] = encoded[i];
-        bufsz = 1;
-        ret = phr_decode_chunked(&dec, buf, &bufsz);
+        //bufsz = 1;
+        ret = phr_decode_chunked(dec, std::span<char>(buf.data(), 1));
         if (ret.ec == chunked_errc::error_occur) {
             test.OK(ret == expected);
-            goto cleanup;
+            //goto cleanup;
+            return;
         }
         else if (ret.ec == chunked_errc::incomplete) {
             /* continue */
         }
         else {
             test.OK(false);
-            goto cleanup;
+            //goto cleanup;
+            return;
         }
     }
     test.OK(ret == expected);
 
-cleanup:
-    free(buf);
+//cleanup:
+//    free(buf);
 }
 
-static void (*chunked_test_runners[])(int, int, const char*, const char*, struct phr_decode_chunked_result, struct picotest::test_t&) =
+static void (*chunked_test_runners[])(int, bool, const char*, const char*, struct phr_decode_chunked_result, struct picotest::test_t&) =
 { 
     test_chunked_at_once, 
     test_chunked_per_byte,
@@ -510,30 +524,30 @@ static void test_chunked(struct picotest::test_t& test)
 
     for (i = 0; chunked_test_runners[i] != NULL; ++i) 
     {
-        chunked_test_runners[i](__LINE__, 0, "b\r\nhello world\r\n0\r\n", "hello world", phr_decode_chunked_result{}, test);
-        chunked_test_runners[i](__LINE__, 0, "6\r\nhello \r\n5\r\nworld\r\n0\r\n", "hello world", phr_decode_chunked_result{}, test);
-        chunked_test_runners[i](__LINE__, 0, "6;comment=hi\r\nhello \r\n5\r\nworld\r\n0\r\n", "hello world", phr_decode_chunked_result{}, test);
-        chunked_test_runners[i](__LINE__, 0, "6 ; comment\r\nhello \r\n5\r\nworld\r\n0\r\n", "hello world", phr_decode_chunked_result{}, test);
-        chunked_test_runners[i](__LINE__, 0, "6\r\nhello \r\n5\r\nworld\r\n0\r\na: b\r\nc: d\r\n\r\n", "hello world",
-            phr_decode_chunked_result{ .bufsz = sizeof("a: b\r\nc: d\r\n\r\n") - 1 }, test);
-        chunked_test_runners[i](__LINE__, 0, "b\r\nhello world\r\n0\r\n", "hello world", phr_decode_chunked_result{}, test);
+        chunked_test_runners[i](__LINE__, false, "b\r\nhello world\r\n0\r\n", "hello world", phr_decode_chunked_result{}, test);
+        chunked_test_runners[i](__LINE__, false, "6\r\nhello \r\n5\r\nworld\r\n0\r\n", "hello world", phr_decode_chunked_result{}, test);
+        chunked_test_runners[i](__LINE__, false, "6;comment=hi\r\nhello \r\n5\r\nworld\r\n0\r\n", "hello world", phr_decode_chunked_result{}, test);
+        chunked_test_runners[i](__LINE__, false, "6 ; comment\r\nhello \r\n5\r\nworld\r\n0\r\n", "hello world", phr_decode_chunked_result{}, test);
+        chunked_test_runners[i](__LINE__, false, "6\r\nhello \r\n5\r\nworld\r\n0\r\na: b\r\nc: d\r\n\r\n", "hello world",
+            phr_decode_chunked_result{ .left_sz = sizeof("a: b\r\nc: d\r\n\r\n") - 1 }, test);
+        chunked_test_runners[i](__LINE__, false, "b\r\nhello world\r\n0\r\n", "hello world", phr_decode_chunked_result{}, test);
     }
 
     test.note("failures");
-    test_chunked_failure(__LINE__, "z\r\nabcdefg", phr_decode_chunked_result{.bufsz = 0, .ec = chunked_errc::error_occur}, test);
+    test_chunked_failure(__LINE__, "z\r\nabcdefg", phr_decode_chunked_result{.left_sz = 0, .ec = chunked_errc::error_occur}, test);
     if (sizeof(size_t) == 8) {
-        test_chunked_failure(__LINE__, "6\r\nhello \r\nffffffffffffffff\r\nabcdefg", phr_decode_chunked_result{ .bufsz = 0, .ec = chunked_errc::incomplete }, test);
-        test_chunked_failure(__LINE__, "6\r\nhello \r\nfffffffffffffffff\r\nabcdefg", phr_decode_chunked_result{ .bufsz = 0, .ec = chunked_errc::error_occur }, test);
+        test_chunked_failure(__LINE__, "6\r\nhello \r\nffffffffffffffff\r\nabcdefg", phr_decode_chunked_result{ .left_sz = 0, .ec = chunked_errc::incomplete }, test);
+        test_chunked_failure(__LINE__, "6\r\nhello \r\nfffffffffffffffff\r\nabcdefg", phr_decode_chunked_result{ .left_sz = 0, .ec = chunked_errc::error_occur }, test);
     }
-    test_chunked_failure(__LINE__, "1x\r\na\r\n0\r\n", phr_decode_chunked_result{ .bufsz = 0, .ec = chunked_errc::error_occur }, test);
+    test_chunked_failure(__LINE__, "1x\r\na\r\n0\r\n", phr_decode_chunked_result{ .left_sz = 0, .ec = chunked_errc::error_occur }, test);
 
     /* bare lf cannot be used in chunk header */
-    test_chunked_failure(__LINE__, "6\nhello \r\n5\r\nworld\r\n0\r\n", phr_decode_chunked_result{ .bufsz = 0, .ec = chunked_errc::error_occur },  test);
-    test_chunked_failure(__LINE__, "6\r\nhello \n5\r\nworld\r\n0\r\n", phr_decode_chunked_result{ .bufsz = 0, .ec = chunked_errc::error_occur }, test);
-    test_chunked_failure(__LINE__, "6\r\nhello \r\n5\r\nworld\n0\r\n", phr_decode_chunked_result{ .bufsz = 0, .ec = chunked_errc::error_occur }, test);
-    test_chunked_failure(__LINE__, "6\r\nhello \r\n5\r\nworld\n0\r\n", phr_decode_chunked_result{ .bufsz = 0, .ec = chunked_errc::error_occur }, test);
-    test_chunked_failure(__LINE__, "6\r\nhello \r\n5\r\nworld\r\n0\n", phr_decode_chunked_result{ .bufsz = 0, .ec = chunked_errc::error_occur }, test);
-    test_chunked_failure(__LINE__, "6\rX\nhello \n5\r\nworld\r\n0\r\n", phr_decode_chunked_result{ .bufsz = 0, .ec = chunked_errc::error_occur }, test);
+    test_chunked_failure(__LINE__, "6\nhello \r\n5\r\nworld\r\n0\r\n", phr_decode_chunked_result{ .left_sz = 0, .ec = chunked_errc::error_occur },  test);
+    test_chunked_failure(__LINE__, "6\r\nhello \n5\r\nworld\r\n0\r\n", phr_decode_chunked_result{ .left_sz = 0, .ec = chunked_errc::error_occur }, test);
+    test_chunked_failure(__LINE__, "6\r\nhello \r\n5\r\nworld\n0\r\n", phr_decode_chunked_result{ .left_sz = 0, .ec = chunked_errc::error_occur }, test);
+    test_chunked_failure(__LINE__, "6\r\nhello \r\n5\r\nworld\n0\r\n", phr_decode_chunked_result{ .left_sz = 0, .ec = chunked_errc::error_occur }, test);
+    test_chunked_failure(__LINE__, "6\r\nhello \r\n5\r\nworld\r\n0\n", phr_decode_chunked_result{ .left_sz = 0, .ec = chunked_errc::error_occur }, test);
+    test_chunked_failure(__LINE__, "6\rX\nhello \n5\r\nworld\r\n0\r\n", phr_decode_chunked_result{ .left_sz = 0, .ec = chunked_errc::error_occur }, test);
 }
 
 static void test_chunked_consume_trailer(struct picotest::test_t& test)
@@ -541,34 +555,32 @@ static void test_chunked_consume_trailer(struct picotest::test_t& test)
     size_t i;
 
     for (i = 0; chunked_test_runners[i] != NULL; ++i) {
-        chunked_test_runners[i](__LINE__, 1, "b\r\nhello world\r\n0\r\n", "hello world", phr_decode_chunked_result{ .bufsz = 0, .ec = chunked_errc::incomplete }, test);
-        chunked_test_runners[i](__LINE__, 1, "6\r\nhello \r\n5\r\nworld\r\n0\r\n", "hello world", phr_decode_chunked_result{ .bufsz = 0, .ec = chunked_errc::incomplete }, test);
-        chunked_test_runners[i](__LINE__, 1, "6;comment=hi\r\nhello \r\n5\r\nworld\r\n0\r\n", "hello world", phr_decode_chunked_result{ .bufsz = 0, .ec = chunked_errc::incomplete }, test);
-        chunked_test_runners[i](__LINE__, 1, "b\r\nhello world\r\n0\r\n\r\n", "hello world", phr_decode_chunked_result{ }, test);
-        chunked_test_runners[i](__LINE__, 1, "6\r\nhello \r\n5\r\nworld\r\n0\r\na: b\r\nc: d\r\n\r\n", "hello world", phr_decode_chunked_result{ }, test);
+        chunked_test_runners[i](__LINE__, true, "b\r\nhello world\r\n0\r\n", "hello world", phr_decode_chunked_result{ .left_sz = 0, .ec = chunked_errc::incomplete }, test);
+        chunked_test_runners[i](__LINE__, true, "6\r\nhello \r\n5\r\nworld\r\n0\r\n", "hello world", phr_decode_chunked_result{ .left_sz = 0, .ec = chunked_errc::incomplete }, test);
+        chunked_test_runners[i](__LINE__, true, "6;comment=hi\r\nhello \r\n5\r\nworld\r\n0\r\n", "hello world", phr_decode_chunked_result{ .left_sz = 0, .ec = chunked_errc::incomplete }, test);
+        chunked_test_runners[i](__LINE__, true, "b\r\nhello world\r\n0\r\n\r\n", "hello world", phr_decode_chunked_result{ }, test);
+        chunked_test_runners[i](__LINE__, true, "6\r\nhello \r\n5\r\nworld\r\n0\r\na: b\r\nc: d\r\n\r\n", "hello world", phr_decode_chunked_result{ }, test);
         /* bare lf is allowed in trailers, for consistency to when they are parsed using phr_parse_headers */
-        chunked_test_runners[i](__LINE__, 1, "b\r\nhello world\r\n0\r\n\n", "hello world", phr_decode_chunked_result{ }, test);
-        chunked_test_runners[i](__LINE__, 1, "6\r\nhello \r\n5\r\nworld\r\n0\r\na: b\nc: d\n\n", "hello world", phr_decode_chunked_result{ }, test);
+        chunked_test_runners[i](__LINE__, true, "b\r\nhello world\r\n0\r\n\n", "hello world", phr_decode_chunked_result{ }, test);
+        chunked_test_runners[i](__LINE__, true, "6\r\nhello \r\n5\r\nworld\r\n0\r\na: b\nc: d\n\n", "hello world", phr_decode_chunked_result{ }, test);
     }
 }
 
 static void test_chunked_leftdata(struct picotest::test_t& test)
 {
-
-    
     const char NEXT_REQ[] = "GET / HTTP/1.1\r\n\r\n";
 
     struct phr_chunked_decoder dec = { 0 };
-    dec.consume_trailer = 1;
+    dec.consume_trailer = true;
     char buf[] = "5\r\nabcde\r\n0\r\n\r\n"  "GET / HTTP/1.1\r\n\r\n";
     size_t bufsz = sizeof(buf) - 1;
 
-    phr_decode_chunked_result ret = phr_decode_chunked(&dec, buf, &bufsz);
+    phr_decode_chunked_result ret = phr_decode_chunked(dec, std::span<char>(buf, bufsz));
     test.OK(ret.ec != chunked_errc::error_occur );
-    test.OK(bufsz == 5);
+    test.OK(ret.buf_len == 5);
     test.OK(memcmp(buf, "abcde", 5) == 0);
-    test.OK(ret.bufsz == sizeof(NEXT_REQ) - 1);
-    test.OK(memcmp(buf + bufsz, NEXT_REQ, sizeof(NEXT_REQ) - 1) == 0);
+    test.OK(ret.left_sz == sizeof(NEXT_REQ) - 1);
+    test.OK(memcmp(buf + ret.buf_len, NEXT_REQ, sizeof(NEXT_REQ) - 1) == 0);
 
 
 }
@@ -583,28 +595,29 @@ static phr_decode_chunked_result do_test_chunked_overhead(size_t chunk_len, size
     for (size_t i = 0; i < chunk_count; ++i) {
         /* build and feed the chunk header */
         bufsz = (size_t)snprintf(buf, sizeof(buf), "%zx%s\r\n", chunk_len, extra);
-        if ((ret = phr_decode_chunked(&dec, buf, &bufsz)).ec != chunked_errc::incomplete)
+
+        if ((ret = phr_decode_chunked(dec, std::span<char>(buf, bufsz) )).ec != chunked_errc::incomplete)
             goto Exit;
-        assert(bufsz == 0);
+        assert(ret.buf_len == 0);
         /* build and feed the chunk boby */
         memset(buf, 'A', chunk_len);
         bufsz = chunk_len;
-        if ((ret = phr_decode_chunked(&dec, buf, &bufsz)).ec != chunked_errc::incomplete)
+        if ((ret = phr_decode_chunked(dec, std::span<char>(buf, bufsz) )).ec != chunked_errc::incomplete)
             goto Exit;
-        assert(bufsz == chunk_len);
+        assert(ret.buf_len == chunk_len);
         /* build and feed the chunk end (CRLF) */
         strcpy(buf, "\r\n");
         bufsz = 2;
-        if ((ret = phr_decode_chunked(&dec, buf, &bufsz)).ec != chunked_errc::incomplete)
+        if ((ret = phr_decode_chunked(dec, std::span<char>(buf, bufsz) )).ec != chunked_errc::incomplete)
             goto Exit;
-        assert(bufsz == 0);
+        assert(ret.buf_len == 0);
     }
 
     /* build and feed the end chunk */
     strcpy(buf, "0\r\n\r\n");
     bufsz = 5;
-    ret = phr_decode_chunked(&dec, buf, &bufsz);
-    assert(bufsz == 0);
+    ret = phr_decode_chunked(dec, std::span<char>(buf, bufsz));
+    assert(ret.buf_len == 0);
 
 Exit:
     return ret;
@@ -612,12 +625,12 @@ Exit:
 
 static void test_chunked_overhead(struct picotest::test_t& test)
 {
-    test.OK(do_test_chunked_overhead(100, 10000, "") == phr_decode_chunked_result{ .bufsz = 2 } /* consume trailer is not set */);
-    test.OK(do_test_chunked_overhead(10, 100000, "") == phr_decode_chunked_result{ .bufsz = 2 } /* consume trailer is not set */);
-    test.OK(do_test_chunked_overhead(1, 1000000, "") == phr_decode_chunked_result{ .bufsz = 0, .ec = chunked_errc::error_occur });
+    test.OK(do_test_chunked_overhead(100, 10000, "") == phr_decode_chunked_result{ .left_sz = 2 } /* consume trailer is not set */);
+    test.OK(do_test_chunked_overhead(10, 100000, "") == phr_decode_chunked_result{ .left_sz = 2 } /* consume trailer is not set */);
+    test.OK(do_test_chunked_overhead(1, 1000000, "") == phr_decode_chunked_result{ .left_sz = 0, .ec = chunked_errc::error_occur });
 
-    test.OK(do_test_chunked_overhead(10, 100000, "; tiny=1") == phr_decode_chunked_result{ .bufsz = 2 } /* consume trailer is not set */);
-    test.OK(do_test_chunked_overhead(10, 100000, "; large=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") == phr_decode_chunked_result{ .bufsz = 0, .ec = chunked_errc::error_occur });
+    test.OK(do_test_chunked_overhead(10, 100000, "; tiny=1") == phr_decode_chunked_result{ .left_sz = 2 } /* consume trailer is not set */);
+    test.OK(do_test_chunked_overhead(10, 100000, "; large=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") == phr_decode_chunked_result{ .left_sz = 0, .ec = chunked_errc::error_occur });
 }
 
 static constexpr size_t INPUTBUF_SIZE = 65536;   /* с запасом, оригинал давал одну страницу (обычно 4096) */
