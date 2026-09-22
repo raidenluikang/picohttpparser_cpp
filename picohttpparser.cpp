@@ -2,12 +2,42 @@
 #include <assert.h>
 #include <stddef.h>
 #include <string.h>
+
+#include <string_view>
+
 #ifdef __SSE4_2__
 #ifdef _MSC_VER
 #include <nmmintrin.h>
 #else
 #include <x86intrin.h>
 #endif
+#endif
+
+#if defined(__cpp_attribute_assume)
+// C++23 standard attribute
+#define ASSUME(cond) [[assume(cond)]]
+
+#elif defined(_MSC_VER) && !defined(__clang__)
+// MSVC and not Clang
+#define ASSUME(cond) __assume(cond)
+
+#elif defined(__clang__)
+
+// Clang builtin
+#if __has_builtin(__builtin_assume)
+
+#define ASSUME(cond) __builtin_assume(cond)
+#else
+#define ASSUME(cond) ((cond) ? (void)0 : __builtin_unreachable())
+#endif
+
+#elif defined(__GNUC__)
+
+// GCC (GCC lacks __builtin_assume, so emulation via __builtin_unreachable is used)
+#define ASSUME(cond) ((cond) ? (void)0 : __builtin_unreachable())
+#else
+// Fallback for unknown compilers
+#define ASSUME(cond) ((void)0)
 #endif
 
 #include "picohttpparser.hpp"
@@ -68,6 +98,9 @@
         tok = tok_start;                                                                                                           \
         toklen = buf - tok_start;                                                                                                  \
     } while (0)
+
+
+namespace { // anonymous namespace
 
 static const char* token_char_map = "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
 "\0\1\0\1\1\1\1\1\0\0\1\1\0\1\1\0\1\1\1\1\1\1\1\1\1\1\0\0\0\0\0\0"
@@ -384,33 +417,6 @@ static const char* parse_request(const char* buf, const char* buf_end, const cha
     return parse_headers(buf, buf_end, headers, num_headers, max_headers, ret);
 }
 
-int phr_parse_request(const char* buf_start, size_t len, const char** method, size_t* method_len, const char** path,
-    size_t* path_len, int* minor_version, struct phr_header* headers, size_t* num_headers, size_t last_len)
-{
-    const char* buf = buf_start, * buf_end = buf_start + len;
-    size_t max_headers = *num_headers;
-    int r;
-
-    *method = nullptr;
-    *method_len = 0;
-    *path = nullptr;
-    *path_len = 0;
-    *minor_version = -1;
-    *num_headers = 0;
-
-    /* if last_len != 0, check if the request is complete (a fast countermeasure
-       againt slowloris */
-    if (last_len != 0 && is_complete(buf, buf_end, last_len, &r) == NULL) {
-        return r;
-    }
-
-    if ((buf = parse_request(buf, buf_end, method, method_len, path, path_len, minor_version, headers, num_headers, max_headers,
-        &r)) == NULL) {
-        return r;
-    }
-
-    return (int)(buf - buf_start);
-}
 
 static const char* parse_response(const char* buf, const char* buf_end, int* minor_version, int* status, const char** msg,
     size_t* msg_len, struct phr_header* headers, size_t* num_headers, size_t max_headers, int* ret)
@@ -459,6 +465,364 @@ static const char* parse_response(const char* buf, const char* buf_end, int* min
     return parse_headers(buf, buf_end, headers, num_headers, max_headers, ret);
 }
 
+
+
+
+
+
+
+static constexpr int decode_hex(const int ch) noexcept
+{
+    if ('0' <= ch && ch <= '9') {
+        return ch - '0';
+    }
+    else if ('A' <= ch && ch <= 'F') {
+        return ch - 'A' + 0xa;
+    }
+    else if ('a' <= ch && ch <= 'f') {
+        return ch - 'a' + 0xa;
+    }
+    else {
+        return -1;
+    }
+}
+
+static constexpr bool allowed_after_hex(const int c) noexcept 
+{
+    switch (c)
+    {
+    case ' ':
+    case '\011':
+    case ';':
+    case '\012':
+    case '\015':
+        return true;
+    default:
+        return false;
+    }
+}
+
+struct hex_result
+{
+    size_t value;
+    size_t length;
+
+    size_t parse_hex(const std::string_view buf)
+    {
+        size_t ix = 0;
+        while (ix < buf.size())
+        {
+            const int hex_digit = decode_hex(buf[ix]);
+
+            if (hex_digit == -1)
+                break;
+
+            
+            length++;
+
+            if (length > 2 * sizeof(size_t))
+                break;
+
+            value = value * 16 + hex_digit;
+
+            ix++;
+        }
+        return ix;
+    }
+};
+
+static constexpr size_t find_first_of(const std::string_view buf, size_t off, char ca, char cb)
+{
+    while (off < buf.size()) {
+        if (buf[off] == ca || buf[off] == cb)
+            return off;
+        ++off;
+    }
+
+    return off;
+}
+
+
+
+    struct phr_chunked_decoder_msm
+    {
+        phr_chunked_decoder& decoder;
+        const std::span<char> buf;
+        size_t dst, src;
+        phr_decode_chunked_result result;
+
+        const std::string_view buf_view;
+
+
+        enum class SwitchState
+        {
+            do_continue,
+            do_exit,
+            do_complete
+        };
+
+
+        explicit phr_chunked_decoder_msm(phr_chunked_decoder& decoder, const std::span<char> buf)
+            : decoder(decoder)
+            , buf(buf)
+            , dst(0)
+            , src(0)
+            , result{ .left_sz = 0, .ec = chunked_errc::incomplete }
+            , buf_view(buf.data(), buf.size())
+        {
+        }
+
+
+        void Complete()
+        {
+            result.left_sz = buf.size() - src;
+            result.ec = chunked_errc{};
+
+            return Exit();
+        }
+
+        void Exit()
+        {
+            if (dst != src && src < buf.size())
+            {
+                memmove(buf.data() + dst, buf.data() + src, buf.size() - src);
+            }
+
+            result.buf_len = dst;
+
+            /* if incomplete but the overhead of the chunked encoding is >=100KB and >80%, signal an error */
+            if (result.ec == chunked_errc::incomplete)
+            {
+                decoder._total_overhead += buf.size() - dst;
+
+                if (decoder._total_overhead >= 100 * 1024 && decoder._total_read - decoder._total_overhead < decoder._total_read / 4)
+                {
+                    result.ec = chunked_errc::error_occur;
+                }
+            }
+        }
+
+        enum SwitchState chunkSize()
+        {
+            assert(src < buf.size());
+            //if (src == buf.size())
+           // {
+           //     return SwitchState::do_exit;
+           // }
+
+            hex_result hrs = { .value = decoder.bytes_left_in_chunk, .length = decoder._hex_count };
+
+            size_t read_count = hrs.parse_hex(buf_view.substr(src));
+
+            src += read_count;
+
+            decoder.bytes_left_in_chunk = hrs.value;
+            decoder._hex_count = hrs.length;
+
+            if (decoder._hex_count == 0 || decoder._hex_count > 2 * sizeof(size_t)) {
+                result.ec = chunked_errc::error_occur;
+                return SwitchState::do_exit;
+            }
+
+            if (src == buf.size()) {
+                return SwitchState::do_exit;
+            }
+
+            if (!allowed_after_hex(buf[src])) {
+                result.ec = chunked_errc::error_occur;
+                return SwitchState::do_exit;
+            }
+
+            decoder._hex_count = 0;
+            decoder._state = ChunkedState::chunk_ext;
+
+            return SwitchState::do_continue;
+        }
+
+        enum SwitchState chunkExt()
+        {
+            /* RFC 7230 A.2 "Line folding in chunk extensions is disallowed" */
+           // assert(src < buf.size());
+
+            src = find_first_of(buf_view, src, '\015', '\012');
+
+            if (src == buf_view.size()) {
+                return SwitchState::do_exit;
+            }
+            if (buf_view[src] == '\012') {
+                result.ec = chunked_errc::error_occur;
+                return SwitchState::do_exit;
+            }
+            src++;
+            decoder._state = ChunkedState::chunk_header_expect_lf;
+            return SwitchState::do_continue;
+        }
+
+        enum SwitchState chunkHeaderExpectLF()
+        {
+            assert(src < buf.size());
+            //if (src == buf.size())
+            //    return SwitchState::do_exit;
+
+            if (buf[src] != '\012')
+            {
+                result.ec = chunked_errc::error_occur;
+                return SwitchState::do_exit;
+            }
+            ++src;
+
+            if (decoder.bytes_left_in_chunk == 0)
+            {
+                if (decoder.consume_trailer)
+                {
+                    decoder._state = ChunkedState::trailers_line_head;
+                    return SwitchState::do_continue;
+                }
+                else
+                {
+                    //goto Complete;
+                    return SwitchState::do_complete;
+                }
+            }
+            decoder._state = ChunkedState::chunk_data;
+            return SwitchState::do_continue;
+        }
+
+        enum SwitchState chunkData()
+        {
+            // assert(src < buf.size());
+
+            size_t avail = buf.size() - src;
+            if (avail < decoder.bytes_left_in_chunk)
+            {
+                if (dst != src)
+                {
+                    memmove(buf.data() + dst, buf.data() + src, avail);
+                }
+
+                src += avail;
+                dst += avail;
+
+                decoder.bytes_left_in_chunk -= avail;
+
+                return SwitchState::do_exit;
+            }
+
+            if (dst != src)
+            {
+                memmove(buf.data() + dst, buf.data() + src, decoder.bytes_left_in_chunk);
+            }
+
+            src += decoder.bytes_left_in_chunk;
+            dst += decoder.bytes_left_in_chunk;
+
+            decoder.bytes_left_in_chunk = 0;
+            decoder._state = ChunkedState::chunk_data_expect_cr;
+
+            return SwitchState::do_continue;
+        }
+
+        enum SwitchState chunkDataExpectCR()
+        {
+            assert(src < buf.size());
+            //if (src == buf.size())
+            //    return SwitchState::do_exit;
+
+            if (buf[src] != '\015') {
+                result.ec = chunked_errc::error_occur;
+                return SwitchState::do_exit;
+            }
+            ++src;
+            decoder._state = ChunkedState::chunk_data_expect_lf;
+            return SwitchState::do_continue;
+        }
+
+        enum SwitchState chunkDataExpectLF()
+        {
+             assert(src < buf.size());
+            //if (src == buf.size())
+            //    return SwitchState::do_exit;
+
+            if (buf[src] != '\012')
+            {
+                result.ec = chunked_errc::error_occur;
+                return SwitchState::do_exit;
+            }
+            ++src;
+            decoder._state = ChunkedState::chunk_size;
+            return SwitchState::do_continue;
+        }
+
+        enum SwitchState trailerLineHead()
+        {
+            // assert(src < buf.size());
+            const size_t pos = buf_view.find_first_not_of('\015', src);
+            if (pos == buf_view.npos) {
+                //all symbols are '\015'
+                src = buf.size();
+                return SwitchState::do_exit;
+            }
+            src = pos;
+
+            if (buf[src++] == '\012')
+                return SwitchState::do_complete;
+
+            decoder._state = ChunkedState::trailers_line_middle;
+            return SwitchState::do_continue;
+        }
+
+        enum SwitchState trailerLineMiddle()
+        {
+            //  assert(src < buf.size());
+
+            const size_t pos = buf_view.find('\012', src);
+            if (pos == buf_view.npos) {
+                src = buf.size();
+                return SwitchState::do_exit;
+            }
+            src = pos + 1;
+            decoder._state = ChunkedState::trailers_line_head;
+            return SwitchState::do_continue;
+        }
+
+        enum SwitchState  doSwitch()
+        {
+            switch (decoder._state)
+            {
+            case ChunkedState::chunk_size: return chunkSize();
+            case ChunkedState::chunk_ext: return chunkExt();
+            case ChunkedState::chunk_header_expect_lf: return chunkHeaderExpectLF();
+            case ChunkedState::chunk_data: return chunkData();
+            case ChunkedState::chunk_data_expect_cr: return chunkDataExpectCR();
+            case ChunkedState::chunk_data_expect_lf: return chunkDataExpectLF();
+            case ChunkedState::trailers_line_head: return trailerLineHead();
+            case ChunkedState::trailers_line_middle: return trailerLineMiddle();
+            default:
+                assert(!"decoder is corrupt");
+
+                ASSUME(false);
+                return SwitchState::do_continue;
+            }
+        }
+
+        void process()
+        {
+            decoder._total_read += buf.size();
+            while (src < buf.size())
+            {
+                SwitchState state = doSwitch();
+                switch (state) 
+                {
+                case SwitchState::do_continue: break;//continue
+                case SwitchState::do_exit: return Exit();
+                case SwitchState::do_complete: return Complete();
+                }
+            }
+            return Exit();
+        }
+    };
+} // end namespace anonymous
+
 int phr_parse_response(const char* buf_start, size_t len, int* minor_version, int* status, const char** msg, size_t* msg_len,
     struct phr_header* headers, size_t* num_headers, size_t last_len)
 {
@@ -484,7 +848,6 @@ int phr_parse_response(const char* buf_start, size_t len, int* minor_version, in
 
     return (int)(buf - buf_start);
 }
-
 int phr_parse_headers(const char* buf_start, size_t len, struct phr_header* headers, size_t* num_headers, size_t last_len)
 {
     const char* buf = buf_start, * buf_end = buf + len;
@@ -505,229 +868,39 @@ int phr_parse_headers(const char* buf_start, size_t len, struct phr_header* head
 
     return (int)(buf - buf_start);
 }
-
-
-
-static constexpr int decode_hex(const int ch) noexcept
+int phr_parse_request(const char* buf_start, size_t len, const char** method, size_t* method_len, const char** path,
+    size_t* path_len, int* minor_version, struct phr_header* headers, size_t* num_headers, size_t last_len)
 {
-    if ('0' <= ch && ch <= '9') {
-        return ch - '0';
+    const char* buf = buf_start, * buf_end = buf_start + len;
+    size_t max_headers = *num_headers;
+    int r;
+
+    *method = nullptr;
+    *method_len = 0;
+    *path = nullptr;
+    *path_len = 0;
+    *minor_version = -1;
+    *num_headers = 0;
+
+    /* if last_len != 0, check if the request is complete (a fast countermeasure
+       againt slowloris */
+    if (last_len != 0 && is_complete(buf, buf_end, last_len, &r) == NULL) {
+        return r;
     }
-    else if ('A' <= ch && ch <= 'F') {
-        return ch - 'A' + 0xa;
+
+    if ((buf = parse_request(buf, buf_end, method, method_len, path, path_len, minor_version, headers, num_headers, max_headers,
+        &r)) == NULL) {
+        return r;
     }
-    else if ('a' <= ch && ch <= 'f') {
-        return ch - 'a' + 0xa;
-    }
-    else {
-        return -1;
-    }
+
+    return (int)(buf - buf_start);
 }
 
 phr_decode_chunked_result phr_decode_chunked(struct phr_chunked_decoder& decoder, const std::span<char> buf)
 {
-    size_t dst = 0, src = 0;
-    phr_decode_chunked_result result = { .left_sz = 0, .ec = chunked_errc::incomplete };
-    
-    decoder._total_read += buf.size();
-
-    while (true) 
-    {
-        switch (decoder._state) 
-        {
-        case  ChunkedState::chunk_size: 
-            for (;; ++src) {
-                int v;
-                if (src == buf.size())
-                    goto Exit;
-                
-                if ((v = decode_hex(buf[src])) == -1) 
-                {
-                    if (decoder._hex_count == 0) {
-                        
-                        result.ec = chunked_errc::error_occur;
-                        goto Exit;
-                    }
-                    /* the only characters that may appear after the chunk size are BWS, semicolon, or CRLF */
-                    switch (buf[src]) 
-                    {
-                    case ' ':
-                    case '\011':
-                    case ';':
-                    case '\012':
-                    case '\015':
-                        break;
-                    default:
-                        result.ec = chunked_errc::error_occur;
-                        goto Exit;
-                    }
-                    break;
-                }
-                
-                if (decoder._hex_count == sizeof(size_t) * 2) 
-                {
-                    result.ec = chunked_errc::error_occur;
-                    goto Exit;
-                }
-                decoder.bytes_left_in_chunk = decoder.bytes_left_in_chunk * 16 + v;
-                ++decoder._hex_count;
-            }
-            decoder._hex_count = 0;
-            decoder._state = ChunkedState::chunk_ext;  
-            /* fallthru */
-
-            [[fallthrough]];
-        case ChunkedState::chunk_ext:
-            /* RFC 7230 A.2 "Line folding in chunk extensions is disallowed" */
-            for (;; ++src) {
-                if (src == buf.size())
-                    goto Exit;
-                if (buf[src] == '\015') {
-                    break;
-                }
-                else if (buf[src] == '\012') {
-                    //ret = -1;
-                    result.ec = chunked_errc::error_occur;
-                    goto Exit;
-                }
-            }
-            ++src;
-            decoder._state = ChunkedState::chunk_header_expect_lf;
-            /* fallthru */
-            [[fallthrough]];
-
-        case ChunkedState::chunk_header_expect_lf: 
-            if (src == buf.size())
-                goto Exit;
-            if (buf[src] != '\012') {
-                //ret = -1;
-                result.ec = chunked_errc::error_occur;
-                goto Exit;
-            }
-            ++src;
-            
-            if (decoder.bytes_left_in_chunk == 0) 
-            {
-                if (decoder.consume_trailer) 
-                {
-                    decoder._state = ChunkedState::trailers_line_head; 
-                    break;
-                }
-                else 
-                {
-                    goto Complete;
-                }
-            }
-            decoder._state = ChunkedState::chunk_data;
-            /* fallthru */
-            [[fallthrough]];
-        case ChunkedState::chunk_data: 
-        {
-            size_t avail = buf.size() - src;
-            if (avail < decoder.bytes_left_in_chunk) {
-                if (dst != src)
-                {
-                    memmove(buf.data() + dst, buf.data() + src, avail);
-                }
-                
-                src += avail;
-                dst += avail;
-                
-                decoder.bytes_left_in_chunk -= avail;
-                
-                goto Exit;
-            }
-            if (dst != src)
-            {
-                memmove(buf.data() + dst, buf.data() + src, decoder.bytes_left_in_chunk);
-            }
-            
-            src += decoder.bytes_left_in_chunk;
-            dst += decoder.bytes_left_in_chunk;
-            
-            decoder.bytes_left_in_chunk = 0;
-            decoder._state = ChunkedState::chunk_data_expect_cr;
-        }
-         /* fallthru */
-        [[fallthrough]];
-        
-        case  ChunkedState::chunk_data_expect_cr:
-            if (src == buf.size())
-                goto Exit;
-            if (buf[src] != '\015') {
-                //ret = -1;
-                result.ec = chunked_errc::error_occur;
-                goto Exit;
-            }
-            ++src;
-            decoder._state = ChunkedState::chunk_data_expect_lf;
-            /* fallthru */
-            [[fallthrough]];
-
-        case ChunkedState::chunk_data_expect_lf: 
-            if (src == buf.size())
-                goto Exit;
-            if (buf[src] != '\012') 
-            {
-                //ret = -1;
-                result.ec = chunked_errc::error_occur;
-                goto Exit;
-            }
-            ++src;
-            decoder._state = ChunkedState::chunk_size;
-            break;
-
-        case ChunkedState::trailers_line_head: 
-            for (;; ++src) {
-                if (src == buf.size())
-                    goto Exit;
-                if (buf[src] != '\015')
-                    break;
-            }
-            if (buf[src++] == '\012')
-                goto Complete;
-            decoder._state = ChunkedState::trailers_line_middle; 
-            /* fallthru */
-            [[fallthrough]];
-        
-        case ChunkedState::trailers_line_middle: 
-            for (;; ++src) {
-                if (src == buf.size())
-                    goto Exit;
-                if (buf[src] == '\012')
-                    break;
-            }
-            ++src;
-            decoder._state = ChunkedState::trailers_line_head; 
-            break;
-        default:
-            assert(!"decoder is corrupt");
-        }
-    }
-
-Complete:
-    result.left_sz = buf.size() - src;
-    result.ec = chunked_errc{};
-Exit:
-    if (dst != src)
-    {
-        memmove(buf.data() + dst, buf.data() + src, buf.size() - src);
-    }
-    
-    
-    result.buf_len = dst;
-
-    /* if incomplete but the overhead of the chunked encoding is >=100KB and >80%, signal an error */
-    if (result.ec  == chunked_errc::incomplete) 
-    {
-        decoder._total_overhead += buf.size() - dst;
-    
-        if (decoder._total_overhead >= 100 * 1024 && decoder._total_read - decoder._total_overhead < decoder._total_read / 4)
-        {
-            result.ec = chunked_errc::error_occur;
-        }
-    }
-    return result;
+    phr_chunked_decoder_msm msm(decoder, buf);
+    msm.process();
+    return msm.result;
 }
 
 

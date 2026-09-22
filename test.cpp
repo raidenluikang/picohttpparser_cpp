@@ -489,7 +489,7 @@ static void test_chunked_failure(int line, const char* encoded, struct phr_decod
     for (size_t i = 0; encoded[i] != '\0'; ++i) 
     {
         buf[0] = encoded[i];
-        //bufsz = 1;
+ 
         ret = phr_decode_chunked(dec, std::span<char>(buf.data(), 1));
         if (ret.ec == chunked_errc::error_occur) {
             test.OK(ret == expected);
@@ -585,41 +585,43 @@ static void test_chunked_leftdata(struct picotest::test_t& test)
 
 }
 
-static phr_decode_chunked_result do_test_chunked_overhead(size_t chunk_len, size_t chunk_count, const char* extra)
+static phr_decode_chunked_result do_test_chunked_overhead(const size_t chunk_len, size_t chunk_count, const char* const extra)
 {
     struct phr_chunked_decoder dec = { 0 };
-    char buf[1024];
-    size_t bufsz;
+
     phr_decode_chunked_result ret{};
+    
+    std::string hxbf = std::format("{:x}{}\r\n", chunk_len, extra);
+    std::string rn = "\r\n";
+
+    std::string Abf(chunk_len, 'A');
 
     for (size_t i = 0; i < chunk_count; ++i) {
+       
         /* build and feed the chunk header */
-        bufsz = (size_t)snprintf(buf, sizeof(buf), "%zx%s\r\n", chunk_len, extra);
-
-        if ((ret = phr_decode_chunked(dec, std::span<char>(buf, bufsz) )).ec != chunked_errc::incomplete)
-            goto Exit;
+        if ((ret = phr_decode_chunked(dec, hxbf )).ec != chunked_errc::incomplete)
+           return ret;
         assert(ret.buf_len == 0);
+
         /* build and feed the chunk boby */
-        memset(buf, 'A', chunk_len);
-        bufsz = chunk_len;
-        if ((ret = phr_decode_chunked(dec, std::span<char>(buf, bufsz) )).ec != chunked_errc::incomplete)
-            goto Exit;
+        if ((ret = phr_decode_chunked(dec, Abf )).ec != chunked_errc::incomplete)
+            return ret;
+
         assert(ret.buf_len == chunk_len);
+
         /* build and feed the chunk end (CRLF) */
-        strcpy(buf, "\r\n");
-        bufsz = 2;
-        if ((ret = phr_decode_chunked(dec, std::span<char>(buf, bufsz) )).ec != chunked_errc::incomplete)
-            goto Exit;
+        if ((ret = phr_decode_chunked(dec, rn )).ec != chunked_errc::incomplete)
+            return ret;
+
         assert(ret.buf_len == 0);
     }
 
     /* build and feed the end chunk */
-    strcpy(buf, "0\r\n\r\n");
-    bufsz = 5;
-    ret = phr_decode_chunked(dec, std::span<char>(buf, bufsz));
+    std::string rnrn = "0\r\n\r\n";
+    ret = phr_decode_chunked(dec, rnrn);
     assert(ret.buf_len == 0);
 
-Exit:
+
     return ret;
 }
 
