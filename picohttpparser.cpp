@@ -6,6 +6,7 @@
 #include <string_view>
 #include <algorithm>
 #include <numeric>
+#include <array>
 
 #include "picohttpparser.hpp"
 
@@ -31,15 +32,34 @@ namespace // anonymous namespace
         return c != '\t' && is_ascii_control(c);
     }
 
-constexpr char token_char_map[] =
-"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
-"\0\1\0\1\1\1\1\1\0\0\1\1\0\1\1\0\1\1\1\1\1\1\1\1\1\1\0\0\0\0\0\0"
-"\0\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\0\0\0\1\1"
-"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\0\1\0\1\0"
-"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
-"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
-"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
-"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+//constexpr char token_char_map[] =
+//"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+//"\0\1\0\1\1\1\1\1\0\0\1\1\0\1\1\0\1\1\1\1\1\1\1\1\1\1\0\0\0\0\0\0"
+//"\0\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\0\0\0\1\1"
+//"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\0\1\0\1\0"
+//"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+//"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+//"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+//"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+
+// bit i в mask[k] соответствует символу с кодом (64*k + i)
+
+constexpr size_t char_value_bits   = 256;
+constexpr size_t uint64_bits_count = 64;
+constexpr size_t mask_size = char_value_bits / uint64_bits_count;
+
+constexpr std::array<uint64_t, mask_size> token_char_mask = 
+{
+    0x03FF6CFA00000000ULL,  // символы 0-63    (0-31: control, 32-63: !#$%&'*+-.0-9)
+    0x57FFFFFFC7FFFFFEULL,  // символы 64-127  (64-90 A-Z^_, 96-122 `a-z|~)
+    0x0000000000000000ULL,  // символы 128-191 — всё 0
+    0x0000000000000000ULL,  // символы 192-255 — всё 0
+};
+
+constexpr bool is_token_char(unsigned char c) noexcept
+{
+    return (token_char_mask[c >> 6] >> (c & 63)) & 1ULL;
+}
 
 constexpr char CR = '\015';   // 0x0D, Carriage Return
 constexpr char LF = '\012';   // 0x0A, Line Feed
@@ -49,13 +69,14 @@ struct advance_result
     std::string_view token;
     parse_ec ec;
 
-    advance_result& unexpected(parse_ec ec) {
+    constexpr advance_result& unexpected(parse_ec ec) noexcept
+    {
         this->ec = ec;
         return *this;
     }
 };
 
-advance_result advance_token(const std::string_view buf)
+constexpr advance_result advance_token(const std::string_view buf) noexcept
 {
     advance_result result{};
     const auto it = std::find_if(buf.cbegin(), buf.cend(), [](const char c) {
@@ -75,13 +96,14 @@ struct token_to_eol_result
     std::string_view token;
     parse_ec ec;
     
-    token_to_eol_result& unexpected(parse_ec ec) {
+   constexpr token_to_eol_result& unexpected(parse_ec ec) noexcept 
+   {
         this->ec = ec;
         return *this;
     }
 };
 
-token_to_eol_result get_token_to_eol(const std::string_view buf)
+constexpr token_to_eol_result get_token_to_eol(const std::string_view buf) noexcept
 {
     token_to_eol_result result{};
 
@@ -113,7 +135,7 @@ token_to_eol_result get_token_to_eol(const std::string_view buf)
 
 
 
-parse_ec is_complete(const std::string_view buf, size_t last_len)
+constexpr parse_ec is_complete(const std::string_view buf, size_t last_len) noexcept
 {
     const size_t start_pos = last_len < 3 ? 0 : last_len - 3;
     for (size_t index = start_pos, ret_cnt = 0; index < buf.size(); ++index)
@@ -141,50 +163,34 @@ parse_ec is_complete(const std::string_view buf, size_t last_len)
 }
 
 
-/* returned pointer is always within [buf, buf_end), or null */
-static const char* parse_token(const char* buf, const char* buf_end, const char** token, size_t* token_len, char next_char,
-    int* ret)
+struct token_result
 {
-    /* We use pcmpestri to detect non-token characters. This instruction can take no more than eight character ranges (8*2*8=128
-     * bits that is the size of a SSE register). Due to this restriction, characters `|` and `~` are handled in the slow loop. */
-    //alignas(16) static const char ranges[] = 
-    //    "\x00 "  /* control chars and up to SP */
-    //    "\"\""   /* 0x22 */
-    //    "()"     /* 0x28,0x29 */
-    //    ",,"     /* 0x2c */
-    //    "//"     /* 0x2f */
-    //    ":@"     /* 0x3a-0x40 */
-    //    "[]"     /* 0x5b-0x5d */
-    //    "{\xff"; /* 0x7b-0xff */
-    const char* buf_start = buf;
-    //
-    //int found = 0;
-    //
-    //buf = findchar_fast(buf, buf_end, ranges, sizeof(ranges) - 1, &found);
-    
-    
-    if (buf == buf_end) {
-        *ret = -2; return 0;
-    }
-     
-    
-    while (1) 
+    std::string_view token;
+    parse_ec ec;
+
+    constexpr token_result unexpected(parse_ec ec) noexcept
     {
-        if (*buf == next_char) {
-            break;
-        }
-        else if (!token_char_map[(unsigned char)*buf]) {
-            *ret = -1;
-            return NULL;
-        }
-        ++buf;
-        if (buf == buf_end) {
-            *ret = -2; return 0;
-        };
+        this->ec = ec;
+        return *this;
     }
-    *token = buf_start;
-    *token_len = buf - buf_start;
-    return buf;
+};
+
+constexpr token_result parse_token(const std::string_view buf, char next_char) noexcept
+{
+    token_result result{};
+    const auto iter = std::find_if(buf.cbegin(), buf.cend(), [next_char](char c) {
+        return c == next_char || !is_token_char(c);
+        });
+
+    if (iter == buf.cend())
+        return result.unexpected(parse_ec::partial);
+
+    if (*iter != next_char) //non token char
+        return result.unexpected(parse_ec::failed);
+
+    result.token = std::string_view(buf.cbegin(), iter);
+   
+    return result;
 }
 
 struct http_version_result
@@ -257,7 +263,14 @@ static const char* parse_headers(const char* buf, const char* buf_end, struct ph
              * http://www.mozilla.org/security/announce/2006/mfsa2006-33.html */
             const char* name  = headers[*num_headers].name.data();
             size_t len = headers[*num_headers].name.length();
-            buf = parse_token(buf, buf_end, &name, &len, ':', ret);
+
+            {
+                std::string_view buf_vw{ buf, static_cast<size_t>(buf_end - buf) };
+                token_result tk_res = parse_token(buf_vw, ':'); //, &name, &len, ':', ret);
+                name = tk_res.token.data();
+                len = tk_res.token.length();
+                buf += tk_res.token.length();
+            }
             
             headers[*num_headers].name = std::string_view(name, len);
 
@@ -344,9 +357,19 @@ static const char* parse_request(const char* buf, const char* buf_end, const cha
     }
 
     /* parse request line */
-    if ((buf = parse_token(buf, buf_end, method, method_len, ' ', ret)) == NULL) {
-        return NULL;
+    {
+        std::string_view buf_vw{ buf, static_cast<size_t>(buf_end - buf) };
+        token_result tk_res = parse_token(buf_vw, ' ');
+        if (tk_res.ec != parse_ec::ok) {
+            *ret = static_cast<int>(tk_res.ec);
+            return NULL;
+        }
+        buf += tk_res.token.length();
+        *method = tk_res.token.data();
+        *method_len = tk_res.token.length();
+        
     }
+
     do {
         ++buf;
         if (buf == buf_end) {
@@ -378,9 +401,9 @@ static const char* parse_request(const char* buf, const char* buf_end, const cha
         *ret = -1;
         return NULL;
     }
-    std::string_view buf_vw{ buf, static_cast<size_t>(buf_end - buf) };
+    std::string_view buf_vw_h{ buf, static_cast<size_t>(buf_end - buf) };
 
-    http_version_result http_version = parse_http_version(buf_vw);
+    http_version_result http_version = parse_http_version(buf_vw_h);
 
     if (http_version.ec != parse_ec::ok) {
         *ret = static_cast<int>(http_version.ec);
