@@ -38,6 +38,14 @@ namespace // anonymous namespace
         return (c == ' ') || (c == '\t');
     }
 
+    constexpr std::string_view remove_last_spaces_and_tabs(const std::string_view value) noexcept
+    {
+        
+        auto rv = value | std::views::reverse;
+        const auto it = std::ranges::find_if_not(rv, space_or_tab);
+        size_t counter = std::ranges::distance(rv.begin(), it);
+        return value.substr(0, value.length() - counter);
+    }
 
 //constexpr char token_char_map[] =
 //"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
@@ -299,12 +307,10 @@ headers_result parse_headers(const std::string_view buf, header_list headers)
             if (tk_res.ec != parse_ec::ok)
                 return result.unexpected(tk_res.ec);
 
-            std::string_view name = tk_res.token;
+            headers.list[num_headers].name = tk_res.token;
             index += tk_res.token.length();
 
-            headers.list[num_headers].name = name;
-
-            if (name.empty())
+            if (tk_res.token.empty())
                 return result.unexpected(parse_ec::failed);
 
             assert(buf[index] == ':');
@@ -323,22 +329,12 @@ headers_result parse_headers(const std::string_view buf, header_list headers)
             
         }
 
-        
         token_to_eol_result eol_res = get_token_to_eol(buf.substr(index));
-
         if (eol_res.ec != parse_ec::ok)
             return result.unexpected(eol_res.ec);
         
         index += eol_res.processed;
-        std::string_view value = eol_res.token;
-        
-        /* remove trailing SPs and HTABs */
-        {
-            auto rv = value | std::views::reverse;
-            const auto it = std::ranges::find_if_not(rv, space_or_tab);
-            value.remove_suffix(std::ranges::distance(rv.begin(), it) );
-        }
-        headers.list[num_headers].value = value; 
+        headers.list[num_headers].value  = remove_last_spaces_and_tabs( eol_res.token );
     }
    
     return result;
