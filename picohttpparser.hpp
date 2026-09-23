@@ -1,14 +1,11 @@
 #ifndef PICOHTTPPARSER_HPP
 #define PICOHTTPPARSER_HPP
 
-#include <stdint.h>
-#include <stddef.h>
+#include <cstdint>
+#include <cstddef>
 #include <span>
 #include <string_view>
 
-#ifdef _MSC_VER
-using ssize_t = intptr_t;
-#endif
 
 
     /* Users of the library are recommended to use the up-to-date master branch. But for those who prefer using versions, the release
@@ -40,14 +37,26 @@ struct parse_result
     size_t num_headers;
 };
 
+struct response_result : public parse_result
+{
+    int minor_version;
+    int status;
+    std::string_view msg;
+};
+
+struct request_result : public parse_result
+{
+    std::string_view method;
+    std::string_view path;
+    int minor_version;
+};
+
 /* returns number of bytes consumed if successful, -2 if request is partial,
     * -1 if failed */
-int phr_parse_request(const char* buf, size_t len, const char** method, size_t* method_len, const char** path, size_t* path_len,
-    int* minor_version, struct phr_header* headers, size_t* num_headers, size_t last_len);
+request_result phr_parse_request(const std::span<const char> buf, std::span<phr_header> headers, size_t last_len);
 
 /* ditto */
-int phr_parse_response(const char* _buf, size_t len, int* minor_version, int* status, const char** msg, size_t* msg_len,
-    struct phr_header* headers, size_t* num_headers, size_t last_len);
+response_result phr_parse_response(const std::span<const char> buf,   std::span<phr_header> headers, size_t last_len);
 
 /* ditto */
 parse_result phr_parse_headers(const std::span<const char> buf, std::span<phr_header> headers, size_t last_len);

@@ -95,79 +95,76 @@ namespace picotest
 
 } // end namespace picotest
 
-static int bufis(const char* s, size_t l, const char* t)
-{
-    return strlen(t) == l && memcmp(s, t, l) == 0;
-}
 
 static char* inputbuf; /* point to the end of the buffer */
 
 static void test_request(struct picotest::test_t & test)
 {
-    const char* method;
-    size_t method_len;
-    const char* path;
-    size_t path_len;
-    int minor_version;
     struct phr_header headers[4];
-    size_t num_headers;
+
+    request_result result;
+    
+    std::span<phr_header> hsp(headers, std::size(headers));
 
     using namespace std::literals::string_view_literals;
 
-//#define PARSE(s, last_len, exp, comment)                                                                                           \
-//    do {                                                                                                                           \
-//        size_t slen = sizeof(s) - 1;                                                                                               \
-//        test.note(comment);                                                                                                        \
-//        num_headers = sizeof(headers) / sizeof(headers[0]);                                                                        \
-//        memcpy(inputbuf - slen, s, slen);                                                                                          \
-//        test.OK(phr_parse_request(inputbuf - slen, slen, &method, &method_len, &path, &path_len, &minor_version, headers, &num_headers, \
-//                             last_len) == (exp == 0 ? (int)slen : exp));                                                           \
-//    } while (0)
 
     const auto PARSE = [&]<size_t N>(const char(&s)[N], size_t last_len, int exp, const char* comment)
     {
         size_t slen = N - 1; // sizeof(s) - 1
         test.note(comment);
-        num_headers = sizeof(headers) / sizeof(headers[0]);
+       
         memcpy(inputbuf - slen, s, slen);
-        test.ok(phr_parse_request(inputbuf - slen, slen, &method, &method_len, &path, &path_len, &minor_version, headers, &num_headers, 
-                                   last_len) == (exp == 0 ? (int)slen : exp));
+        
+        std::span<const char> buf_sp(inputbuf - slen, slen);
+
+        result = phr_parse_request(buf_sp, hsp, last_len);// == (exp == 0 ? (int)slen : exp)
+        
+        bool ok;
+        if (exp == 0) {
+            ok = (result.ec == parse_ec::ok && result.bsz == slen);
+        }
+        else {
+            ok = (result.ec == static_cast<parse_ec>(exp));
+        }
+
+        test.ok(ok);
                 
     };
 
     PARSE("GET / HTTP/1.0\r\n\r\n", 0, 0, "simple");
-    test.ok(num_headers == 0);
-    test.ok(bufis(method, method_len, "GET"));
-    test.ok(bufis(path, path_len, "/"));
-    test.ok(minor_version == 0);
+    test.ok(result.num_headers == 0);
+    test.ok(result.method == "GET"sv );
+    test.ok(result.path == "/"sv);
+    test.ok(result.minor_version == 0);
 
     PARSE("GET / HTTP/1.0\r\n\r", 0, -2, "partial");
 
     PARSE("GET /hoge HTTP/1.1\r\nHost: example.com\r\nCookie: \r\n\r\n", 0, 0, "parse headers");
-    test.ok(num_headers == 2);
-    test.ok(bufis(method, method_len, "GET"));
-    test.ok(bufis(path, path_len, "/hoge"));
-    test.ok(minor_version == 1);
+    test.ok(result.num_headers == 2);
+    test.ok(result.method == "GET"sv);
+    test.ok(result.path ==  "/hoge"sv);
+    test.ok(result.minor_version == 1);
     test.ok(headers[0].name ==  "Host"sv);
     test.ok(headers[0].value == "example.com"sv);
     test.ok(headers[1].name == "Cookie"sv);
     test.ok(headers[1].value == ""sv);
 
     PARSE("GET /hoge HTTP/1.1\r\nHost: example.com\r\nUser-Agent: \343\201\262\343/1.0\r\n\r\n", 0, 0, "multibyte included");
-    test.ok(num_headers == 2);
-    test.ok(bufis(method, method_len, "GET"));
-    test.ok(bufis(path, path_len, "/hoge"));
-    test.ok(minor_version == 1);
+    test.ok(result.num_headers == 2);
+    test.ok(result.method == "GET"sv);
+    test.ok(result.path == "/hoge"sv);
+    test.ok(result.minor_version == 1);
     test.ok(headers[0].name == "Host"sv);
     test.ok(headers[0].value ==  "example.com"sv);
     test.ok(headers[1].name == "User-Agent"sv);
     test.ok(headers[1].value ==  "\343\201\262\343/1.0"sv);
 
     PARSE("GET / HTTP/1.0\r\nfoo: \r\nfoo: b\r\n  \tc\r\n\r\n", 0, 0, "parse multiline");
-    test.ok(num_headers == 3);
-    test.ok(bufis(method, method_len, "GET"));
-    test.ok(bufis(path, path_len, "/"));
-    test.ok(minor_version == 0);
+    test.ok(result.num_headers == 3);
+    test.ok(result.method ==  "GET"sv);
+    test.ok(result.path == "/"sv);
+    test.ok(result.minor_version == 0);
     test.ok(headers[0].name == "foo"sv);
     test.ok(headers[0].value == ""sv);
     test.ok(headers[1].name == "foo"sv);
@@ -178,19 +175,19 @@ static void test_request(struct picotest::test_t & test)
     PARSE("GET / HTTP/1.0\r\nfoo : ab\r\n\r\n", 0, -1, "parse header name with trailing space");
 
     PARSE("GET", 0, -2, "incomplete 1");
-    test.ok(method == NULL);
+    test.ok(result.method.empty());
     PARSE("GET ", 0, -2, "incomplete 2");
-    test.ok(bufis(method, method_len, "GET"));
+    test.ok(result.method ==  "GET"sv);
     PARSE("GET /", 0, -2, "incomplete 3");
-    test.ok(path == NULL);
+    test.ok(result.path.empty());
     PARSE("GET / ", 0, -2, "incomplete 4");
-    test.ok(bufis(path, path_len, "/"));
+    test.ok(result.path ==  "/"sv);
     PARSE("GET / H", 0, -2, "incomplete 5");
     PARSE("GET / HTTP/1.", 0, -2, "incomplete 6");
     PARSE("GET / HTTP/1.0", 0, -2, "incomplete 7");
-    test.ok(minor_version == -1);
+    test.ok(result.minor_version == -1);
     PARSE("GET / HTTP/1.0\r", 0, -2, "incomplete 8");
-    test.ok(minor_version == 0);
+    test.ok(result.minor_version == 0);
 
     PARSE("GET /hoge HTTP/1.0\r\n\r", strlen("GET /hoge HTTP/1.0\r\n\r") - 1, -2, "slowloris (incomplete)");
     PARSE("GET /hoge HTTP/1.0\r\n\r\n", strlen("GET /hoge HTTP/1.0\r\n\r\n") - 1, 0, "slowloris (complete)");
@@ -211,15 +208,15 @@ static void test_request(struct picotest::test_t & test)
     PARSE("GET / HTTP/1.0\r\nab: c\033\r\n\r\n", 0, -1, "CTL in header value");
     PARSE("GET / HTTP/1.0\r\n/: 1\r\n\r\n", 0, -1, "invalid char in header value");
     PARSE("GET /\xa0 HTTP/1.0\r\nh: c\xa2y\r\n\r\n", 0, 0, "accept MSB chars");
-    test.ok(num_headers == 1);
-    test.ok(bufis(method, method_len, "GET"));
-    test.ok(bufis(path, path_len, "/\xa0"));
-    test.ok(minor_version == 0);
+    test.ok(result.num_headers == 1);
+    test.ok(result.method ==  "GET"sv);
+    test.ok(result.path == "/\xa0"sv);
+    test.ok(result.minor_version == 0);
     test.ok(headers[0].name == "h"sv);
     test.ok(headers[0].value == "c\xa2y"sv);
 
     PARSE("GET / HTTP/1.0\r\n\x7c\x7e: 1\r\n\r\n", 0, 0, "accept |~ (though forbidden by SSE)");
-    test.ok(num_headers == 1);
+    test.ok(result.num_headers == 1);
     test.ok(headers[0].name == "\x7c\x7e"sv);
     test.ok(headers[0].value ==  "1"sv);
 
@@ -235,12 +232,11 @@ static void test_request(struct picotest::test_t & test)
 
 static void test_response(struct picotest::test_t& test)
 {
-    int minor_version;
-    int status;
-    const char* msg;
-    size_t msg_len;
     struct phr_header headers[4];
-    size_t num_headers;
+    
+    response_result result;
+
+    std::span<phr_header> hsp(headers, sizeof(headers) / sizeof(headers[0]));
 
     using namespace std::literals::string_view_literals;
 
@@ -248,35 +244,47 @@ static void test_response(struct picotest::test_t& test)
     {
         size_t slen = N - 1; // sizeof(s) - 1
         test.note(comment);
-        num_headers = sizeof(headers) / sizeof(headers[0]);
+        
         memcpy(inputbuf - slen, s, slen);
-        test.ok(phr_parse_response(inputbuf - slen, slen, &minor_version, &status, &msg, &msg_len, 
-            headers, &num_headers, last_len) == (exp == 0 ? (int)slen : exp));
+
+        std::span<const char>buf_sp(inputbuf - slen, slen);
+    
+        result = phr_parse_response(buf_sp, hsp, last_len);
+        
+        bool ok;
+        if (exp == 0) {
+            ok = (result.ec == parse_ec::ok && result.bsz == slen);
+        }
+        else {
+            ok = (result.ec == static_cast<parse_ec>(exp));
+        }
+
+        test.ok(ok);
     };
 
     PARSE("HTTP/1.0 200 OK\r\n\r\n", 0, 0, "simple");
-    test.ok(num_headers == 0);
-    test.ok(status == 200);
-    test.ok(minor_version == 0);
-    test.ok(bufis(msg, msg_len, "OK"));
+    test.ok(result.num_headers == 0);
+    test.ok(result.status == 200);
+    test.ok(result.minor_version == 0);
+    test.ok( result.msg == "OK"sv);
 
     PARSE("HTTP/1.0 200 OK\r\n\r", 0, -2, "partial");
 
     PARSE("HTTP/1.1 200 OK\r\nHost: example.com\r\nCookie: \r\n\r\n", 0, 0, "parse headers");
-    test.ok(num_headers == 2);
-    test.ok(minor_version == 1);
-    test.ok(status == 200);
-    test.ok(bufis(msg, msg_len, "OK"));
+    test.ok(result.num_headers == 2);
+    test.ok(result.minor_version == 1);
+    test.ok(result.status == 200);
+    test.ok(result.msg == "OK"sv);
     test.ok(headers[0].name == "Host"sv);
     test.ok(headers[0].value == "example.com"sv);
     test.ok(headers[1].name ==  "Cookie"sv);
     test.ok(headers[1].value == ""sv);
 
     PARSE("HTTP/1.0 200 OK\r\nfoo: \r\nfoo: b\r\n  \tc\r\n\r\n", 0, 0, "parse multiline");
-    test.ok(num_headers == 3);
-    test.ok(minor_version == 0);
-    test.ok(status == 200);
-    test.ok(bufis(msg, msg_len, "OK"));
+    test.ok(result.num_headers == 3);
+    test.ok(result.minor_version == 0);
+    test.ok(result.status == 200);
+    test.ok(result.msg == "OK"sv);
     test.ok(headers[0].name == "foo"sv);
     test.ok(headers[0].value == ""sv);
     test.ok(headers[1].name == "foo"sv);
@@ -285,35 +293,35 @@ static void test_response(struct picotest::test_t& test)
     test.ok(headers[2].value == "  \tc"sv);
 
     PARSE("HTTP/1.0 500 Internal Server Error\r\n\r\n", 0, 0, "internal server error");
-    test.ok(num_headers == 0);
-    test.ok(minor_version == 0);
-    test.ok(status == 500);
-    test.ok(bufis(msg, msg_len, "Internal Server Error"));
-    test.ok(msg_len == sizeof("Internal Server Error") - 1);
+    test.ok(result.num_headers == 0);
+    test.ok(result.minor_version == 0);
+    test.ok(result.status == 500);
+    test.ok(result.msg == "Internal Server Error"sv);
+    test.ok(result.msg.length() == sizeof("Internal Server Error") - 1);
 
     PARSE("H", 0, -2, "incomplete 1");
     PARSE("HTTP/1.", 0, -2, "incomplete 2");
     PARSE("HTTP/1.1", 0, -2, "incomplete 3");
-    test.ok(minor_version == -1);
+    test.ok(result.minor_version == -1);
     PARSE("HTTP/1.1 ", 0, -2, "incomplete 4");
-    test.ok(minor_version == 1);
+    test.ok(result.minor_version == 1);
     PARSE("HTTP/1.1 2", 0, -2, "incomplete 5");
     PARSE("HTTP/1.1 200", 0, -2, "incomplete 6");
-    test.ok(status == 0);
+    test.ok(result.status == 0);
     PARSE("HTTP/1.1 200 ", 0, -2, "incomplete 7");
-    test.ok(status == 200);
+    test.ok(result.status == 200);
     PARSE("HTTP/1.1 200 O", 0, -2, "incomplete 8");
     PARSE("HTTP/1.1 200 OK\r", 0, -2, "incomplete 9");
-    test.ok(msg == NULL);
+    test.ok(result.msg.empty());
     PARSE("HTTP/1.1 200 OK\r\n", 0, -2, "incomplete 10");
-    test.ok(bufis(msg, msg_len, "OK"));
+    test.ok(result.msg == "OK"sv);
     PARSE("HTTP/1.1 200 OK\n", 0, -2, "incomplete 11");
-    test.ok(bufis(msg, msg_len, "OK"));
+    test.ok(result.msg ==  "OK"sv);
 
     PARSE("HTTP/1.1 200 OK\r\nA: 1\r", 0, -2, "incomplete 11");
-    test.ok(num_headers == 0);
+    test.ok(result.num_headers == 0);
     PARSE("HTTP/1.1 200 OK\r\nA: 1\r\n", 0, -2, "incomplete 12");
-    test.ok(num_headers == 1);
+    test.ok(result.num_headers == 1);
     test.ok(headers[0].name ==  "A"sv);
     test.ok(headers[0].value == "1"sv);
 
@@ -325,7 +333,7 @@ static void test_response(struct picotest::test_t& test)
     PARSE("HTTP/1.1  OK\r\n\r\n", 0, -1, "no status code");
 
     PARSE("HTTP/1.1 200\r\n\r\n", 0, 0, "accept missing trailing whitespace in status-line");
-    test.ok(bufis(msg, msg_len, ""));
+    test.ok(result.msg ==  ""sv);
     PARSE("HTTP/1.1 200X\r\n\r\n", 0, -1, "garbage after status 1");
     PARSE("HTTP/1.1 200X \r\n\r\n", 0, -1, "garbage after status 2");
     PARSE("HTTP/1.1 200X OK\r\n\r\n", 0, -1, "garbage after status 3");
@@ -400,42 +408,46 @@ static void test_headers(struct picotest::test_t& test)
 static void test_chunked_at_once(int line, bool consume_trailer, const char* encoded, const char* decoded, struct phr_decode_chunked_result expected, struct picotest::test_t& test)
 {
     struct phr_chunked_decoder dec = { 0 };
-    //char* buf;
-    //size_t bufsz;
-    //ssize_t ret;
 
     dec.consume_trailer = consume_trailer;
 
     test.note(std::format("testing at-once, source at line {}", line));
 
-    //buf = _strdup(encoded);
-    //bufsz = strlen(buf);
-    
+   
     std::string buf = encoded;
 
     auto ret = phr_decode_chunked(dec, buf);
 
     test.ok(ret == expected);
     test.ok(ret.buf_len == strlen(decoded));
-    test.ok(bufis(buf.data(), ret.buf_len, decoded));
-    
+    test.ok(buf.starts_with(decoded)); 
+
     if (expected.ec == chunked_errc{}) 
     {
         if (ret == expected)
-            test.ok(bufis(buf.data() + ret.buf_len, ret.left_sz, encoded + strlen(encoded) - ret.left_sz));
+        {
+            std::string_view buf_vw = static_cast<std::string_view>(buf);
+            std::string_view buf_last = buf_vw.substr(ret.buf_len, ret.left_sz);
+
+            std::string_view enc_vw(encoded);
+            std::string_view enc_last = enc_vw.substr(enc_vw.length() - ret.left_sz);
+
+            test.ok(buf_last == enc_last);
+        }
         else
             test.ok(false);
     }
-
-    //free(buf);
 }
 
 static void test_chunked_per_byte(int line, bool consume_trailer, const char* encoded, const char* decoded, struct phr_decode_chunked_result expected, struct picotest::test_t& test)
 {
     struct phr_chunked_decoder dec = { 0 };
-    char* buf = (char*) malloc(strlen(encoded) + 1);
+
     
-    size_t bytes_to_consume = strlen(encoded) - (expected.ec == chunked_errc{} ? expected.left_sz : 0);
+    std::string buf = encoded;
+
+    const size_t bytes_to_consume = strlen(encoded) -  expected.left_sz ;
+
     size_t bytes_ready = 0;
     size_t bufsz;
     size_t i;
@@ -449,41 +461,46 @@ static void test_chunked_per_byte(int line, bool consume_trailer, const char* en
     for (i = 0; i < bytes_to_consume - 1; ++i) {
         buf[bytes_ready] = encoded[i];
         bufsz = 1;
-        ret = phr_decode_chunked(dec, std::span<char>(buf + bytes_ready, bufsz) );
+        ret = phr_decode_chunked(dec, std::span<char>(buf.data() + bytes_ready, bufsz));
         if (ret.ec != chunked_errc::incomplete) {
             test.ok(false);
-            goto cleanup;
+            return;
         }
         bufsz = ret.buf_len;
         bytes_ready += bufsz;
     }
-    strcpy(buf + bytes_ready, encoded + bytes_to_consume - 1);
-    bufsz = strlen(buf + bytes_ready);
+    strcpy(buf.data() + bytes_ready, encoded + bytes_to_consume - 1);
+    bufsz = strlen(buf.data() + bytes_ready);
     
-    ret = phr_decode_chunked(dec, std::span<char>(buf + bytes_ready, bufsz) );
+    ret = phr_decode_chunked(dec, std::span<char>(buf.data() + bytes_ready, bufsz));
     
     test.ok(ret == expected);
     bytes_ready += ret.buf_len;
     test.ok(bytes_ready == strlen(decoded));
-    test.ok(bufis(buf, bytes_ready, decoded));
+
+    test.ok(buf.starts_with(decoded));  
     
     if (expected.ec == chunked_errc{}) 
     {
         if (ret == expected)
-            test.ok(bufis(buf + bytes_ready, expected.left_sz, encoded + bytes_to_consume));
+        {
+            std::string_view buf_vw = static_cast<std::string_view>(buf);
+            std::string_view buf_last = buf_vw.substr(bytes_ready, expected.left_sz);
+            std::string_view enc_vw(encoded);
+            std::string_view enc_last = enc_vw.substr(bytes_to_consume);
+
+            test.ok(buf_last == enc_last);  //bufis(buf + bytes_ready, expected.left_sz, encoded + bytes_to_consume));
+        }
         else
             test.ok(false);
     }
 
-cleanup:
-    free(buf);
 }
 
 static void test_chunked_failure(int line, const char* encoded, struct phr_decode_chunked_result expected, struct picotest::test_t& test)
 {
     struct phr_chunked_decoder dec = { 0 };
-    //char* buf = _strdup(encoded);
-    //size_t bufsz, i;
+
     struct phr_decode_chunked_result ret;
     
     std::string buf = encoded;
@@ -495,8 +512,10 @@ static void test_chunked_failure(int line, const char* encoded, struct phr_decod
 
     test.note(std::format("testing failure per-byte, source at line {}", line));
 
-    memset(&dec, 0, sizeof(dec));
+
     
+    dec = phr_chunked_decoder{};
+
     for (size_t i = 0; encoded[i] != '\0'; ++i) 
     {
         buf[0] = encoded[i];
@@ -504,7 +523,7 @@ static void test_chunked_failure(int line, const char* encoded, struct phr_decod
         ret = phr_decode_chunked(dec, std::span<char>(buf.data(), 1));
         if (ret.ec == chunked_errc::error_occur) {
             test.ok(ret == expected);
-            //goto cleanup;
+            
             return;
         }
         else if (ret.ec == chunked_errc::incomplete) {
@@ -512,14 +531,13 @@ static void test_chunked_failure(int line, const char* encoded, struct phr_decod
         }
         else {
             test.ok(false);
-            //goto cleanup;
+            
             return;
         }
     }
     test.ok(ret == expected);
 
-//cleanup:
-//    free(buf);
+
 }
 
 static void (*chunked_test_runners[])(int, bool, const char*, const char*, struct phr_decode_chunked_result, struct picotest::test_t&) =
@@ -646,7 +664,7 @@ static void test_chunked_overhead(struct picotest::test_t& test)
     test.ok(do_test_chunked_overhead(10, 100000, "; large=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") == phr_decode_chunked_result{ .left_sz = 0, .ec = chunked_errc::error_occur });
 }
 
-static constexpr size_t INPUTBUF_SIZE = 65536;   /* с запасом, оригинал давал одну страницу (обычно 4096) */
+static constexpr size_t INPUTBUF_SIZE = 4096;   /* с запасом, оригинал давал одну страницу (обычно 4096) */
 
 int main(void)
 {

@@ -5,104 +5,21 @@
 
 #include <string_view>
 
-#ifdef __SSE4_2__
-#ifdef _MSC_VER
-#include <nmmintrin.h>
-#else
-#include <x86intrin.h>
-#endif
-#endif
-
-#if defined(__cpp_attribute_assume)
-// C++23 standard attribute
-#define ASSUME(cond) [[assume(cond)]]
-
-#elif defined(_MSC_VER) && !defined(__clang__)
-// MSVC and not Clang
-#define ASSUME(cond) __assume(cond)
-
-#elif defined(__clang__)
-
-// Clang builtin
-#if __has_builtin(__builtin_assume)
-
-#define ASSUME(cond) __builtin_assume(cond)
-#else
-#define ASSUME(cond) ((cond) ? (void)0 : __builtin_unreachable())
-#endif
-
-#elif defined(__GNUC__)
-
-// GCC (GCC lacks __builtin_assume, so emulation via __builtin_unreachable is used)
-#define ASSUME(cond) ((cond) ? (void)0 : __builtin_unreachable())
-#else
-// Fallback for unknown compilers
-#define ASSUME(cond) ((void)0)
-#endif
 
 #include "picohttpparser.hpp"
-
-#if __GNUC__ >= 3
-#define likely(x) __builtin_expect(!!(x), 1)
-#define unlikely(x) __builtin_expect(!!(x), 0)
-#else
-#define likely(x) (x)
-#define unlikely(x) (x)
-#endif
-
-#ifdef _MSC_VER
-#define ALIGNED(n) _declspec(align(n))
-#else
-#define ALIGNED(n) __attribute__((aligned(n)))
-#endif
-
-#define IS_PRINTABLE_ASCII(c) ((unsigned char)(c)-040u < 0137u)
-
-#define CHECK_EOF()                                                                                                                \
-    if (buf == buf_end) {                                                                                                          \
-        *ret = -2;                                                                                                                 \
-        return NULL;                                                                                                               \
-    }
-
-#define EXPECT_CHAR_NO_CHECK(ch)                                                                                                   \
-    if (*buf++ != ch) {                                                                                                            \
-        *ret = -1;                                                                                                                 \
-        return NULL;                                                                                                               \
-    }
-
-#define EXPECT_CHAR(ch)                                                                                                            \
-    CHECK_EOF();                                                                                                                   \
-    EXPECT_CHAR_NO_CHECK(ch);
-
-#define ADVANCE_TOKEN(tok, toklen)                                                                                                 \
-    do {                                                                                                                           \
-        const char *tok_start = buf;                                                                                               \
-        static const char ALIGNED(16) ranges2[16] = "\000\040\177\177";                                                            \
-        int found2;                                                                                                                \
-        buf = findchar_fast(buf, buf_end, ranges2, 4, &found2);                                                                    \
-        if (!found2) {                                                                                                             \
-            CHECK_EOF();                                                                                                           \
-        }                                                                                                                          \
-        while (1) {                                                                                                                \
-            if (*buf == ' ') {                                                                                                     \
-                break;                                                                                                             \
-            } else if (unlikely(!IS_PRINTABLE_ASCII(*buf))) {                                                                      \
-                if ((unsigned char)*buf < '\040' || *buf == '\177') {                                                              \
-                    *ret = -1;                                                                                                     \
-                    return NULL;                                                                                                   \
-                }                                                                                                                  \
-            }                                                                                                                      \
-            ++buf;                                                                                                                 \
-            CHECK_EOF();                                                                                                           \
-        }                                                                                                                          \
-        tok = tok_start;                                                                                                           \
-        toklen = buf - tok_start;                                                                                                  \
-    } while (0)
-
-
 // anonymous namespace
-namespace 
-{ 
+namespace
+{
+
+    constexpr bool is_printable_ascii(int c) noexcept
+    {
+        return c >= ' ' && c <= '~';
+    }
+
+    constexpr bool is_ascii_digit(int c) noexcept
+    {
+        return c >= '0' and c <= '9';
+    }
 
 constexpr char token_char_map[] =
 "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
@@ -114,85 +31,128 @@ constexpr char token_char_map[] =
 "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
 "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 
-static const char* findchar_fast(const char* buf, const char* buf_end, const char* ranges, size_t ranges_size, int* found)
-{
-    *found = 0;
-#if __SSE4_2__
-    if (likely(buf_end - buf >= 16)) {
-        __m128i ranges16 = _mm_loadu_si128((const __m128i*)ranges);
 
-        size_t left = (buf_end - buf) & ~15;
-        do {
-            __m128i b16 = _mm_loadu_si128((const __m128i*)buf);
-            int r = _mm_cmpestri(ranges16, ranges_size, b16, 16, _SIDD_LEAST_SIGNIFICANT | _SIDD_CMP_RANGES | _SIDD_UBYTE_OPS);
-            if (unlikely(r != 16)) {
-                buf += r;
-                *found = 1;
-                break;
-            }
-            buf += 16;
-            left -= 16;
-        } while (likely(left != 0));
+
+std::string_view advance_token(const char* buf, const char* buf_end, int* ret)
+{
+    const char* tok_start = buf;
+    
+    
+
+    if (buf == buf_end) 
+    {
+        *ret = -2;
+    
+        return {};
     }
-#else
-    /* suppress unused parameter warning */
-    (void)buf_end;
-    (void)ranges;
-    (void)ranges_size;
-#endif
-    return buf;
+
+    while (1)
+    {
+        if (*buf == ' ')
+        {
+            break;
+        }
+        else if (!is_printable_ascii(*buf)) [[unlikely]]
+        {
+            if ((unsigned char)*buf < '\040' || *buf == '\177')
+            {
+                *ret = -1;
+                return {};
+            }
+        }
+        ++buf;
+        if (buf == buf_end) {
+            *ret = -2;
+            return {};
+        };
+    }
+
+    *ret = 0;
+    size_t len = buf - tok_start;
+    return std::string_view(tok_start, len);
 }
 
 static const char* get_token_to_eol(const char* buf, const char* buf_end, const char** token, size_t* token_len, int* ret)
 {
     const char* token_start = buf;
 
-#ifdef __SSE4_2__
-    static const char ALIGNED(16) ranges1[16] = "\0\010"    /* allow HT */
-        "\012\037"  /* allow SP and up to but not including DEL */
-        "\177\177"; /* allow chars w. MSB set */
-    int found;
-    buf = findchar_fast(buf, buf_end, ranges1, 6, &found);
-    if (found)
-        goto FOUND_CTL;
-#else
+ 
     /* find non-printable char within the next 8 bytes, this is the hottest code; manually inlined */
-    while (likely(buf_end - buf >= 8)) {
-#define DOIT()                                                                                                                     \
-    do {                                                                                                                           \
-        if (unlikely(!IS_PRINTABLE_ASCII(*buf)))                                                                                   \
-            goto NonPrintable;                                                                                                     \
-        ++buf;                                                                                                                     \
-    } while (0)
-        DOIT();
-        DOIT();
-        DOIT();
-        DOIT();
-        DOIT();
-        DOIT();
-        DOIT();
-        DOIT();
-#undef DOIT
+    while (buf_end - buf >= 8) [[likely]]
+    {
+
+
+        
+        if (!is_printable_ascii(*buf)) [[unlikely]] 
+            goto NonPrintable; 
+        ++buf;
+        
+        
+        if (!is_printable_ascii(*buf)) [[unlikely]] 
+            goto NonPrintable; 
+        ++buf;
+        
+        
+        if (!is_printable_ascii(*buf)) [[unlikely]] 
+            goto NonPrintable; 
+        ++buf;
+        
+        
+        if (!is_printable_ascii(*buf)) [[unlikely]] 
+            goto NonPrintable; 
+        ++buf;
+        
+        
+        if (!is_printable_ascii(*buf)) [[unlikely]] 
+            goto NonPrintable; 
+        ++buf;
+        
+        
+        if (!is_printable_ascii(*buf)) [[unlikely]] 
+            goto NonPrintable; 
+        ++buf;
+        
+        
+        if (!is_printable_ascii(*buf)) [[unlikely]] 
+            goto NonPrintable; 
+        ++buf;
+        
+        
+        if (!is_printable_ascii(*buf)) [[unlikely]] 
+            goto NonPrintable; 
+        ++buf;
+        
+ 
         continue;
     NonPrintable:
-        if ((likely((unsigned char)*buf < '\040') && likely(*buf != '\011')) || unlikely(*buf == '\177')) {
+        if (( ((unsigned char)*buf < '\040') && (*buf != '\011')) || (*buf == '\177')) [[likely]]{
             goto FOUND_CTL;
         }
         ++buf;
     }
-#endif
+ 
+    
     for (;; ++buf) {
-        CHECK_EOF();
-        if (unlikely(!IS_PRINTABLE_ASCII(*buf))) {
-            if ((likely((unsigned char)*buf < '\040') && likely(*buf != '\011')) || unlikely(*buf == '\177')) {
+        if (buf == buf_end) {
+            *ret = -2; return 0;
+        };
+        if ((!is_printable_ascii(*buf))) [[unlikely]]
+        {
+            if ((((unsigned char)*buf < '\040') && (*buf != '\011')) || (*buf == '\177')) [[likely]] {
                 goto FOUND_CTL;
             }
         }
     }
 FOUND_CTL:
-    if (likely(*buf == '\015')) {
+    if ((*buf == '\015')) [[likely]]
+    {
         ++buf;
-        EXPECT_CHAR('\012');
+        if (buf == buf_end) {
+            *ret = -2; return 0;
+        } 
+        if (*buf++ != '\012') {
+            *ret = -1; return 0;
+        }
         *token_len = buf - 2 - token_start;
     }
     else if (*buf == '\012') {
@@ -253,24 +213,6 @@ static const char* is_complete(const char* buf, const char* buf_end, size_t last
     return NULL;
 }
 
-#define PARSE_INT(valp_, mul_)                                                                                                     \
-    if (*buf < '0' || '9' < *buf) {                                                                                                \
-        buf++;                                                                                                                     \
-        *ret = -1;                                                                                                                 \
-        return NULL;                                                                                                               \
-    }                                                                                                                              \
-    *(valp_) = (mul_) * (*buf++ - '0');
-
-#define PARSE_INT_3(valp_)                                                                                                         \
-    do {                                                                                                                           \
-        int res_ = 0;                                                                                                              \
-        PARSE_INT(&res_, 100)                                                                                                      \
-        *valp_ = res_;                                                                                                             \
-        PARSE_INT(&res_, 10)                                                                                                       \
-        *valp_ += res_;                                                                                                            \
-        PARSE_INT(&res_, 1)                                                                                                        \
-        *valp_ += res_;                                                                                                            \
-    } while (0)
 
 /* returned pointer is always within [buf, buf_end), or null */
 static const char* parse_token(const char* buf, const char* buf_end, const char** token, size_t* token_len, char next_char,
@@ -278,7 +220,7 @@ static const char* parse_token(const char* buf, const char* buf_end, const char*
 {
     /* We use pcmpestri to detect non-token characters. This instruction can take no more than eight character ranges (8*2*8=128
      * bits that is the size of a SSE register). Due to this restriction, characters `|` and `~` are handled in the slow loop. */
-    static const char ALIGNED(16) ranges[] = 
+    alignas(16) static const char ranges[] = 
         "\x00 "  /* control chars and up to SP */
         "\"\""   /* 0x22 */
         "()"     /* 0x28,0x29 */
@@ -289,13 +231,15 @@ static const char* parse_token(const char* buf, const char* buf_end, const char*
         "{\xff"; /* 0x7b-0xff */
     const char* buf_start = buf;
     
-    int found;
+    int found = 0;
     
-    buf = findchar_fast(buf, buf_end, ranges, sizeof(ranges) - 1, &found);
+    //buf = findchar_fast(buf, buf_end, ranges, sizeof(ranges) - 1, &found);
     
-    if (!found) {
-        CHECK_EOF();
+    
+    if (buf == buf_end) {
+        *ret = -2; return 0;
     }
+     
     
     while (1) 
     {
@@ -307,7 +251,9 @@ static const char* parse_token(const char* buf, const char* buf_end, const char*
             return NULL;
         }
         ++buf;
-        CHECK_EOF();
+        if (buf == buf_end) {
+            *ret = -2; return 0;
+        };
     }
     *token = buf_start;
     *token_len = buf - buf_start;
@@ -318,18 +264,56 @@ static const char* parse_token(const char* buf, const char* buf_end, const char*
 static const char* parse_http_version(const char* buf, const char* buf_end, int* minor_version, int* ret)
 {
     /* we want at least [HTTP/1.<two chars>] to try to parse */
-    if (buf_end - buf < 9) {
+    if (buf_end - buf < 9) 
+    {
         *ret = -2;
         return NULL;
     }
-    EXPECT_CHAR_NO_CHECK('H');
-    EXPECT_CHAR_NO_CHECK('T');
-    EXPECT_CHAR_NO_CHECK('T');
-    EXPECT_CHAR_NO_CHECK('P');
-    EXPECT_CHAR_NO_CHECK('/');
-    EXPECT_CHAR_NO_CHECK('1');
-    EXPECT_CHAR_NO_CHECK('.');
-    PARSE_INT(minor_version, 1);
+    if (*buf++ != 'H') {
+        *ret = -1; 
+        return 0;
+    }
+
+    if (*buf++ != 'T') {
+        *ret = -1; 
+        return 0;
+    }
+    
+    if (*buf++ != 'T') {
+        *ret = -1; 
+        return 0;
+    }
+    
+    if (*buf++ != 'P') {
+        *ret = -1; 
+        return 0;
+    }
+    
+    if (*buf++ != '/') {
+        *ret = -1; 
+        return 0;
+    }
+    
+    if (*buf++ != '1') {
+        *ret = -1; 
+        return 0;
+    }
+    
+    if (*buf++ != '.') {
+        *ret = -1; 
+        return 0;
+    }
+    
+    
+    if (*buf < '0' || '9' < *buf) 
+    {
+        buf++; 
+        *ret = -1; 
+        return 0;
+    } 
+    
+    *(minor_version) = (1) * (*buf++ - '0');
+
     return buf;
 }
 
@@ -337,10 +321,16 @@ static const char* parse_headers(const char* buf, const char* buf_end, struct ph
     size_t max_headers, int* ret)
 {
     for (;; ++*num_headers) {
-        CHECK_EOF();
+        if (buf == buf_end) {
+            *ret = -2; return 0;
+        };
         if (*buf == '\015') {
             ++buf;
-            EXPECT_CHAR('\012');
+            if (buf == buf_end) {
+                *ret = -2; return 0;
+            }; if (*buf++ != '\012') {
+                *ret = -1; return 0;
+            };;
             break;
         }
         else if (*buf == '\012') {
@@ -369,7 +359,9 @@ static const char* parse_headers(const char* buf, const char* buf_end, struct ph
             }
             ++buf;
             for (;; ++buf) {
-                CHECK_EOF();
+                if (buf == buf_end) {
+                    *ret = -2; return 0;
+                };
                 if (!(*buf == ' ' || *buf == '\t')) {
                     break;
                 }
@@ -404,10 +396,18 @@ static const char* parse_request(const char* buf, const char* buf_end, const cha
     size_t max_headers, int* ret)
 {
     /* skip first empty line (some clients add CRLF after POST content) */
-    CHECK_EOF();
+    if (buf == buf_end) {
+        *ret = -2; 
+        return 0;
+    };
     if (*buf == '\015') {
         ++buf;
-        EXPECT_CHAR('\012');
+        if (buf == buf_end) {
+            *ret = -2; return 0;
+        }; 
+        if (*buf++ != '\012') {
+            *ret = -1; return 0;
+        };;
     }
     else if (*buf == '\012') {
         ++buf;
@@ -419,12 +419,25 @@ static const char* parse_request(const char* buf, const char* buf_end, const cha
     }
     do {
         ++buf;
-        CHECK_EOF();
+        if (buf == buf_end) {
+            *ret = -2; return 0;
+        };
     } while (*buf == ' ');
-    ADVANCE_TOKEN(*path, *path_len);
+   
+    std::string_view path_vw = advance_token(buf, buf_end, ret);
+    
+    if (*ret != 0) 
+    {
+        return NULL;
+    }
+    *path = path_vw.data();
+    *path_len = path_vw.length();
+
     do {
         ++buf;
-        CHECK_EOF();
+        if (buf == buf_end) {
+            *ret = -2; return 0;
+        };
     } while (*buf == ' ');
     if (*method_len == 0 || *path_len == 0) {
         *ret = -1;
@@ -433,9 +446,20 @@ static const char* parse_request(const char* buf, const char* buf_end, const cha
     if ((buf = parse_http_version(buf, buf_end, minor_version, ret)) == NULL) {
         return NULL;
     }
-    if (*buf == '\015') {
+    
+    if (*buf == '\015') 
+    {
         ++buf;
-        EXPECT_CHAR('\012');
+        
+        if (buf == buf_end) 
+        {
+            *ret = -2; 
+            return 0;
+        } 
+        if (*buf++ != '\012') {
+            *ret = -1; 
+            return 0;
+        }
     }
     else if (*buf == '\012') {
         ++buf;
@@ -463,14 +487,44 @@ static const char* parse_response(const char* buf, const char* buf_end, int* min
     }
     do {
         ++buf;
-        CHECK_EOF();
+        if (buf == buf_end) 
+        {
+            *ret = -2; 
+            return 0;
+        }
     } while (*buf == ' ');
     /* parse status code, we want at least [:digit:][:digit:][:digit:]<other char> to try to parse */
     if (buf_end - buf < 4) {
         *ret = -2;
         return NULL;
     }
-    PARSE_INT_3(status);
+    do {
+        int res_ = 0; 
+        if (*buf < '0' || '9' < *buf) {
+            buf++; 
+            *ret = -1; 
+            return 0;
+        } 
+        
+        *(&res_) = (100) * (*buf++ - '0'); 
+        *status = res_; 
+        
+        if (*buf < '0' || '9' < *buf) {
+            buf++; *ret = -1; 
+            return 0;
+        } 
+        
+        *(&res_) = (10) * (*buf++ - '0'); 
+        *status += res_; 
+        
+        if (*buf < '0' || '9' < *buf) 
+        {
+            buf++; *ret = -1; return 0;
+        } 
+        
+        *(&res_) = (1) * (*buf++ - '0'); 
+        *status += res_;
+    } while (0);
 
     /* get message including preceding space */
     if ((buf = get_token_to_eol(buf, buf_end, msg, msg_len, ret)) == NULL) {
@@ -830,8 +884,6 @@ static constexpr size_t find_first_of(const std::string_view buf, size_t off, ch
             case ChunkedState::trailers_line_middle: return trailerLineMiddle();
             default:
                 assert(!"decoder is corrupt");
-
-                ASSUME(false);
                 return SwitchState::do_continue;
             }
         }
@@ -854,30 +906,46 @@ static constexpr size_t find_first_of(const std::string_view buf, size_t off, ch
     };
 } // end namespace anonymous
 
-int phr_parse_response(const char* buf_start, size_t len, int* minor_version, int* status, const char** msg, size_t* msg_len,
-    struct phr_header* headers, size_t* num_headers, size_t last_len)
+//int phr_parse_response(const char* buf_start, size_t len, int* minor_version, int* status, const char** msg, size_t* msg_len,
+ //   struct phr_header* headers, size_t* num_headers, size_t last_len)
+response_result phr_parse_response(const std::span<const char> buf_start, std::span<phr_header> headers, size_t last_len)
 {
-    const char* buf = buf_start, * buf_end = buf + len;
-    size_t max_headers = *num_headers;
+    const char* buf = buf_start.data(), * buf_end = buf + buf_start.size();
+    size_t max_headers = headers.size();
+    
+    response_result result{};
     int r;
 
-    *minor_version = -1;
-    *status = 0;
-    *msg = NULL;
-    *msg_len = 0;
-    *num_headers = 0;
+    result.minor_version = -1;
+    result.num_headers = 0;
 
     /* if last_len != 0, check if the response is complete (a fast countermeasure
        against slowloris */
     if (last_len != 0 && is_complete(buf, buf_end, last_len, &r) == NULL) {
-        return r;
+        result.ec = static_cast<parse_ec>(r);
+        return result;
+    }
+    int minor_version = -1;
+    int status = 0;
+    const char* msg = NULL;
+    size_t msg_len = 0;
+    size_t num_headers = 0;
+
+    buf = parse_response(buf, buf_end, &minor_version, &status, &msg, &msg_len, headers.data(), &num_headers, max_headers, &r);
+    
+    result.minor_version = minor_version;
+    result.status = status;
+    result.msg = msg == NULL ? std::string_view{} : std::string_view{ msg, msg_len };
+    result.num_headers = num_headers;
+
+    if (buf == NULL) {
+        result.ec = static_cast<parse_ec>(r);
+        return result;
     }
 
-    if ((buf = parse_response(buf, buf_end, minor_version, status, msg, msg_len, headers, num_headers, max_headers, &r)) == NULL) {
-        return r;
-    }
-
-    return (int)(buf - buf_start);
+    result.bsz = (buf - buf_start.data());
+    
+    return result;
 }
 
 parse_result phr_parse_headers(const std::span<const char> buf_start, std::span<phr_header> headers, size_t last_len)
@@ -910,32 +978,49 @@ parse_result phr_parse_headers(const std::span<const char> buf_start, std::span<
     return result;
 }
 
-int phr_parse_request(const char* buf_start, size_t len, const char** method, size_t* method_len, const char** path,
-    size_t* path_len, int* minor_version, struct phr_header* headers, size_t* num_headers, size_t last_len)
+//int phr_parse_request(const char* buf_start, size_t len, const char** method, size_t* method_len, const char** path,
+//    size_t* path_len, int* minor_version, struct phr_header* headers, size_t* num_headers, size_t last_len)
+request_result phr_parse_request(const std::span<const char> buf_start, std::span<phr_header> headers, size_t last_len)
 {
-    const char* buf = buf_start, * buf_end = buf_start + len;
-    size_t max_headers = *num_headers;
+    const char* buf = buf_start.data(), * buf_end = buf_start.data() + buf_start.size();
+    size_t max_headers = headers.size();
     int r;
+    request_result result{};
+    
 
-    *method = nullptr;
-    *method_len = 0;
-    *path = nullptr;
-    *path_len = 0;
-    *minor_version = -1;
-    *num_headers = 0;
+    result.minor_version = -1;
 
     /* if last_len != 0, check if the request is complete (a fast countermeasure
        againt slowloris */
     if (last_len != 0 && is_complete(buf, buf_end, last_len, &r) == NULL) {
-        return r;
+        result.ec = static_cast<parse_ec>(r);
+        return result;
     }
 
-    if ((buf = parse_request(buf, buf_end, method, method_len, path, path_len, minor_version, headers, num_headers, max_headers,
-        &r)) == NULL) {
-        return r;
-    }
+    const char* method = nullptr;
+    size_t method_len = 0;
 
-    return (int)(buf - buf_start);
+    const char* path = nullptr;
+    size_t path_len = 0;
+
+    int minor_version = -1;
+    size_t num_headers = 0;
+    buf = parse_request(buf, buf_end, &method, &method_len, &path, &path_len, &minor_version, headers.data(), &num_headers, max_headers,
+        &r);
+
+    result.minor_version = minor_version;
+    result.num_headers = num_headers;
+    result.method = (method != nullptr ? std::string_view{ method, method_len } : std::string_view{});
+    result.path = (path != nullptr ? std::string_view(path, path_len) : std::string_view{});
+
+    if (buf == NULL) {
+        result.ec = static_cast<parse_ec>(r);
+        return result;
+        
+    }
+    result.ec = parse_ec::ok;
+    result.bsz = (buf - buf_start.data());
+    return result;
 }
 
 phr_decode_chunked_result phr_decode_chunked(struct phr_chunked_decoder& decoder, const std::span<char> buf)
@@ -951,6 +1036,3 @@ bool phr_decode_chunked_is_in_data(const struct phr_chunked_decoder& decoder)
     return decoder._state == ChunkedState::chunk_data; //CHUNKED_IN_CHUNK_DATA;
 }
 
-#undef CHECK_EOF
-#undef EXPECT_CHAR
-#undef ADVANCE_TOKEN
