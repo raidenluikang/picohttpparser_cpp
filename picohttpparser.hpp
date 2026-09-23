@@ -41,16 +41,26 @@ struct parse_result
 
 struct response_result : public parse_result
 {
-    int minor_version;
+    int minor_version = -1;
     int status;
     std::string_view msg;
+
+    constexpr response_result unexpected(parse_ec ec) noexcept {
+        this->ec = ec;
+        return *this;
+    }
 };
 
 struct request_result : public parse_result
 {
     std::string_view method;
     std::string_view path;
-    int minor_version;
+    int minor_version = -1;
+
+    constexpr request_result unexpected(parse_ec ec) noexcept {
+        this->ec = ec;
+        return *this;
+    }
 };
 
 /* returns number of bytes consumed if successful, -2 if request is partial,

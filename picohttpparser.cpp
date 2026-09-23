@@ -340,127 +340,101 @@ headers_result parse_headers(const std::string_view buf, header_list headers)
     return result;
 }
 
-static const char* parse_request(const char* buf, const char* buf_end, const char** method, size_t* method_len, const char** path,
-    size_t* path_len, int* minor_version, struct phr_header* headers, size_t* num_headers,
-    size_t max_headers, int* ret)
+static request_result parse_request(const std::string_view buf,  header_list headers)
 {
+    request_result result{};
+     
+
     /* skip first empty line (some clients add CRLF after POST content) */
-    if (buf == buf_end) 
-    {
-        *ret = -2; 
-        return 0;
-    };
+    if (buf.empty())
+        return result.unexpected(parse_ec::partial);
     
-    if (*buf == '\015') 
+    size_t& index = result.bsz; // consumed bytes.
+
+    if (buf[index] == CR)
     {
-        ++buf;
+        ++index;
         
-        if (buf == buf_end) 
-        {
-            *ret = -2; 
-            return 0;
-        } 
+        if (index == buf.size())
+            return result.unexpected(parse_ec::partial);
         
-        if (*buf++ != '\012') 
-        {
-            *ret = -1; 
-            return 0;
-        }
+        if (buf[index++] != LF)
+            return result.unexpected(parse_ec::failed);
     }
-    else if (*buf == '\012') 
+    else if (buf[index] == LF)
     {
-        ++buf;
+        ++index;
     }
 
     /* parse request line */
     {
-        std::string_view buf_vw{ buf, static_cast<size_t>(buf_end - buf) };
-        token_result tk_res = parse_token(buf_vw, ' ');
-        if (tk_res.ec != parse_ec::ok) {
-            *ret = static_cast<int>(tk_res.ec);
-            return NULL;
-        }
-        buf += tk_res.token.length();
-        *method = tk_res.token.data();
-        *method_len = tk_res.token.length();
+        token_result tk_res = parse_token(buf.substr(index), ' ');
+        if (tk_res.ec != parse_ec::ok)
+            return result.unexpected(tk_res.ec);
+
+        index += tk_res.token.length();
+
+        result.method = tk_res.token;
         
     }
 
-    do {
-        ++buf;
-        if (buf == buf_end) {
-            *ret = -2; return 0;
-        };
-    } while (*buf == ' ');
+    size_t non_space = buf.find_first_not_of(' ', index + 1);
+    if (non_space == buf.npos)
+        return result.unexpected(parse_ec::partial);
+    index = non_space;
+
    
-    advance_result adv_res = advance_token(std::string_view{ buf, static_cast<size_t>(buf_end - buf) });
-    std::string_view path_vw = adv_res.token;
+    advance_result adv_res = advance_token(buf.substr(index));
+    if (adv_res.ec != parse_ec::ok)
+        return result.unexpected(adv_res.ec);
+
+    result.path = adv_res.token;
     
-    if (adv_res.ec != parse_ec::ok) 
+    index += adv_res.token.length();
+
+    size_t non_space2 = buf.find_first_not_of(' ', index + 1);
+
+    if (non_space2 == buf.npos)
+        return result.unexpected(parse_ec::partial);
+
+    index = non_space2;
+
+    if (result.method.empty() || result.path.empty())
+        return result.unexpected(parse_ec::failed);
+
+    http_version_result http_version = parse_http_version(buf.substr(index));
+
+    if (http_version.ec != parse_ec::ok)
+        return result.unexpected(http_version.ec);
+    
+    result.minor_version = http_version.minor_version;
+    
+    index = http_version.left.data() - buf.data(); //@TODO fix it.
+    
+    if (buf[index] == CR)
     {
-        *ret = static_cast<int>(adv_res.ec);
-        return NULL;
-    }
-    *path = path_vw.data();
-    *path_len = path_vw.length();
-    
-    buf += path_vw.length();
-
-    do {
-        ++buf;
-        if (buf == buf_end) {
-            *ret = -2; return 0;
-        };
-    } while (*buf == ' ');
-
-    if (*method_len == 0 || *path_len == 0) {
-        *ret = -1;
-        return NULL;
-    }
-    std::string_view buf_vw_h{ buf, static_cast<size_t>(buf_end - buf) };
-
-    http_version_result http_version = parse_http_version(buf_vw_h);
-
-    if (http_version.ec != parse_ec::ok) {
-        *ret = static_cast<int>(http_version.ec);
-        return NULL;
-    }
-    
-    *minor_version = http_version.minor_version;
-    buf = http_version.left.data();
-    
-    if (*buf == '\015') 
-    {
-        ++buf;
+        ++index;
         
-        if (buf == buf_end) 
-        {
-            *ret = -2; 
-            return 0;
-        } 
-        if (*buf++ != '\012') {
-            *ret = -1; 
-            return 0;
-        }
+        if (index == buf.size())
+            return result.unexpected(parse_ec::partial);
+        if (buf[index++] != LF)
+            return result.unexpected(parse_ec::failed);
     }
-    else if (*buf == '\012') {
-        ++buf;
+    else if (buf[index] == LF ) {
+        ++index;
     }
     else {
-        *ret = -1;
-        return NULL;
+        return result.unexpected(parse_ec::failed);
     }
 
-    header_list header_lst;
-    header_lst.list = std::span<phr_header>(headers, max_headers);
-    header_lst.index = *num_headers;
+    headers_result hd_res =  parse_headers( buf.substr(index), headers);
 
-    headers_result hd_res =  parse_headers(std::string_view{ buf, buf_end }, header_lst);
-    *ret = (int)hd_res.ec;
-    
-    *num_headers = hd_res.num_headers;
+    result.ec = hd_res.ec;
+    result.num_headers = hd_res.num_headers;
 
-    return buf + hd_res.processed;
+    index += hd_res.processed;
+
+    return result;
 }
 
 
@@ -1002,11 +976,11 @@ parse_result phr_parse_headers(const std::span<const char> buf_start, std::span<
 
 request_result phr_parse_request(const std::span<const char> buf_start, std::span<phr_header> headers, size_t last_len)
 {
-    const char* buf = buf_start.data(), * buf_end = buf_start.data() + buf_start.size();
-    size_t max_headers = headers.size();
-    int r;
-    request_result result{};
+    //const char* buf = buf_start.data(), * buf_end = buf_start.data() + buf_start.size();
+    //size_t max_headers = headers.size();
     
+    request_result result{};
+    std::string_view buf(buf_start.data(), buf_start.size());
 
     result.minor_version = -1;
 
@@ -1014,38 +988,18 @@ request_result phr_parse_request(const std::span<const char> buf_start, std::spa
        againt slowloris */
     
     if (last_len != 0 ) {
-        std::string_view buf_vw{ buf, static_cast<size_t>(buf_end - buf) };
-        parse_ec cpl_res = is_complete(buf_vw, last_len);
+        
+        parse_ec cpl_res = is_complete(buf, last_len);
         if (cpl_res != parse_ec::ok) {
             result.ec = cpl_res;
             return result;
         }
     }
+    header_list hdr_list;
+    hdr_list.list = headers;
+    hdr_list.index = 0;
+    return parse_request(buf, hdr_list );
 
-    const char* method = nullptr;
-    size_t method_len = 0;
-
-    const char* path = nullptr;
-    size_t path_len = 0;
-
-    int minor_version = -1;
-    size_t num_headers = 0;
-    buf = parse_request(buf, buf_end, &method, &method_len, &path, &path_len, &minor_version, headers.data(), &num_headers, max_headers,
-        &r);
-
-    result.minor_version = minor_version;
-    result.num_headers = num_headers;
-    result.method = (method != nullptr ? std::string_view{ method, method_len } : std::string_view{});
-    result.path = (path != nullptr ? std::string_view(path, path_len) : std::string_view{});
-
-    if (r != 0) {
-        result.ec = static_cast<parse_ec>(r);
-        return result;
-        
-    }
-    result.ec = parse_ec::ok;
-    result.bsz = (buf - buf_start.data());
-    return result;
 }
 
 phr_decode_chunked_result phr_decode_chunked(struct phr_chunked_decoder& decoder, const std::span<char> buf)
