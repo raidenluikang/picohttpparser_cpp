@@ -4,22 +4,28 @@
 #include <string.h>
 
 #include <string_view>
-
+#include <algorithm>
+#include <numeric>
 
 #include "picohttpparser.hpp"
-// anonymous namespace
-namespace
+
+namespace // anonymous namespace
 {
 
-    constexpr bool is_printable_ascii(int c) noexcept
+    constexpr bool is_printable_ascii(char c) noexcept
     {
         return c >= ' ' && c <= '~';
     }
 
-    constexpr bool is_ascii_digit(int c) noexcept
+    constexpr bool is_ascii_digit(char c) noexcept
     {
-        return c >= '0' and c <= '9';
+        return c >= '0' && c <= '9';
     }
+    constexpr bool is_ascii_control(char c) noexcept
+    {
+        return static_cast<unsigned char>(c) < 32 || c == 127; /*DEL = 127 code*/
+    }
+
 
 constexpr char token_char_map[] =
 "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
@@ -32,45 +38,38 @@ constexpr char token_char_map[] =
 "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 
 
-
-std::string_view advance_token(const char* buf, const char* buf_end, int* ret)
+struct advance_result
 {
-    const char* tok_start = buf;
-    
-    
+    std::string_view token;
+    parse_ec ec;
+};
 
-    if (buf == buf_end) 
+advance_result advance_token(const std::string_view buf)
+{
+    advance_result result{};
+
+    const auto it = std::find_if(buf.cbegin(), buf.cend(), [](const char c) {
+        return c == ' ' || is_ascii_control(c);
+    });
+
+    if (it == buf.cend())
     {
-        *ret = -2;
-    
-        return {};
+        result.ec = parse_ec::partial;
     }
-
-    while (1)
+    else
+    if (*it != ' ')   // остановились на control-символе, не на пробеле
     {
-        if (*buf == ' ')
-        {
-            break;
-        }
-        else if (!is_printable_ascii(*buf)) [[unlikely]]
-        {
-            if ((unsigned char)*buf < '\040' || *buf == '\177')
-            {
-                *ret = -1;
-                return {};
-            }
-        }
-        ++buf;
-        if (buf == buf_end) {
-            *ret = -2;
-            return {};
-        };
+        result.ec = parse_ec::failed;
     }
-
-    *ret = 0;
-    size_t len = buf - tok_start;
-    return std::string_view(tok_start, len);
+    else 
+    {
+        result.ec = parse_ec::ok;
+        result.token = buf.substr(0, it - buf.cbegin());
+    }
+    
+    return result;
 }
+
 
 static const char* get_token_to_eol(const char* buf, const char* buf_end, const char** token, size_t* token_len, int* ret)
 {
@@ -220,19 +219,19 @@ static const char* parse_token(const char* buf, const char* buf_end, const char*
 {
     /* We use pcmpestri to detect non-token characters. This instruction can take no more than eight character ranges (8*2*8=128
      * bits that is the size of a SSE register). Due to this restriction, characters `|` and `~` are handled in the slow loop. */
-    alignas(16) static const char ranges[] = 
-        "\x00 "  /* control chars and up to SP */
-        "\"\""   /* 0x22 */
-        "()"     /* 0x28,0x29 */
-        ",,"     /* 0x2c */
-        "//"     /* 0x2f */
-        ":@"     /* 0x3a-0x40 */
-        "[]"     /* 0x5b-0x5d */
-        "{\xff"; /* 0x7b-0xff */
+    //alignas(16) static const char ranges[] = 
+    //    "\x00 "  /* control chars and up to SP */
+    //    "\"\""   /* 0x22 */
+    //    "()"     /* 0x28,0x29 */
+    //    ",,"     /* 0x2c */
+    //    "//"     /* 0x2f */
+    //    ":@"     /* 0x3a-0x40 */
+    //    "[]"     /* 0x5b-0x5d */
+    //    "{\xff"; /* 0x7b-0xff */
     const char* buf_start = buf;
-    
-    int found = 0;
-    
+    //
+    //int found = 0;
+    //
     //buf = findchar_fast(buf, buf_end, ranges, sizeof(ranges) - 1, &found);
     
     
@@ -260,61 +259,45 @@ static const char* parse_token(const char* buf, const char* buf_end, const char*
     return buf;
 }
 
-/* returned pointer is always within [buf, buf_end), or null */
-static const char* parse_http_version(const char* buf, const char* buf_end, int* minor_version, int* ret)
+struct http_version_result
 {
+    std::string_view left;
+    int minor_version;
+    parse_ec ec;
+};
+
+constexpr http_version_result parse_http_version(const std::string_view buf) noexcept
+{
+    using namespace std::literals::string_view_literals;
+
+    constexpr std::string_view http_prefix = "HTTP/1."sv;
+
+
+    http_version_result result{};
+
     /* we want at least [HTTP/1.<two chars>] to try to parse */
-    if (buf_end - buf < 9) 
+    if (buf.length() < http_prefix.length() + 2) //+2 chars
     {
-        *ret = -2;
-        return NULL;
+        result.ec = parse_ec::partial;
+        return result;
     }
-    if (*buf++ != 'H') {
-        *ret = -1; 
-        return 0;
+    
+    if (!buf.starts_with(http_prefix))
+    {
+        result.ec = parse_ec::failed;
+        return result;
     }
 
-    if (*buf++ != 'T') {
-        *ret = -1; 
-        return 0;
-    }
-    
-    if (*buf++ != 'T') {
-        *ret = -1; 
-        return 0;
-    }
-    
-    if (*buf++ != 'P') {
-        *ret = -1; 
-        return 0;
-    }
-    
-    if (*buf++ != '/') {
-        *ret = -1; 
-        return 0;
-    }
-    
-    if (*buf++ != '1') {
-        *ret = -1; 
-        return 0;
-    }
-    
-    if (*buf++ != '.') {
-        *ret = -1; 
-        return 0;
-    }
-    
-    
-    if (*buf < '0' || '9' < *buf) 
+    if (!is_ascii_digit( buf[ http_prefix.length() ] ) ) 
     {
-        buf++; 
-        *ret = -1; 
-        return 0;
-    } 
+        result.ec = parse_ec::failed;
+        return result;
+    }
     
-    *(minor_version) = (1) * (*buf++ - '0');
+    result.minor_version =  buf[http_prefix.length()] - '0';
+    result.left = buf.substr(http_prefix.length() + 1);
 
-    return buf;
+    return result;
 }
 
 static const char* parse_headers(const char* buf, const char* buf_end, struct phr_header* headers, size_t* num_headers,
@@ -396,20 +379,30 @@ static const char* parse_request(const char* buf, const char* buf_end, const cha
     size_t max_headers, int* ret)
 {
     /* skip first empty line (some clients add CRLF after POST content) */
-    if (buf == buf_end) {
+    if (buf == buf_end) 
+    {
         *ret = -2; 
         return 0;
     };
-    if (*buf == '\015') {
+    
+    if (*buf == '\015') 
+    {
         ++buf;
-        if (buf == buf_end) {
-            *ret = -2; return 0;
-        }; 
-        if (*buf++ != '\012') {
-            *ret = -1; return 0;
-        };;
+        
+        if (buf == buf_end) 
+        {
+            *ret = -2; 
+            return 0;
+        } 
+        
+        if (*buf++ != '\012') 
+        {
+            *ret = -1; 
+            return 0;
+        }
     }
-    else if (*buf == '\012') {
+    else if (*buf == '\012') 
+    {
         ++buf;
     }
 
@@ -424,14 +417,18 @@ static const char* parse_request(const char* buf, const char* buf_end, const cha
         };
     } while (*buf == ' ');
    
-    std::string_view path_vw = advance_token(buf, buf_end, ret);
+    advance_result adv_res = advance_token(std::string_view{ buf, static_cast<size_t>(buf_end - buf) });
+    std::string_view path_vw = adv_res.token;
     
-    if (*ret != 0) 
+    if (adv_res.ec != parse_ec::ok) 
     {
+        *ret = static_cast<int>(adv_res.ec);
         return NULL;
     }
     *path = path_vw.data();
     *path_len = path_vw.length();
+    
+    buf += path_vw.length();
 
     do {
         ++buf;
@@ -439,13 +436,22 @@ static const char* parse_request(const char* buf, const char* buf_end, const cha
             *ret = -2; return 0;
         };
     } while (*buf == ' ');
+
     if (*method_len == 0 || *path_len == 0) {
         *ret = -1;
         return NULL;
     }
-    if ((buf = parse_http_version(buf, buf_end, minor_version, ret)) == NULL) {
+    std::string_view buf_vw{ buf, static_cast<size_t>(buf_end - buf) };
+
+    http_version_result http_version = parse_http_version(buf_vw);
+
+    if (http_version.ec != parse_ec::ok) {
+        *ret = static_cast<int>(http_version.ec);
         return NULL;
     }
+    
+    *minor_version = http_version.minor_version;
+    buf = http_version.left.data();
     
     if (*buf == '\015') 
     {
@@ -477,9 +483,17 @@ static const char* parse_response(const char* buf, const char* buf_end, int* min
     size_t* msg_len, struct phr_header* headers, size_t* num_headers, size_t max_headers, int* ret)
 {
     /* parse "HTTP/1.x" */
-    if ((buf = parse_http_version(buf, buf_end, minor_version, ret)) == NULL) {
+    std::string_view buf_vw { buf, static_cast<size_t>(buf_end - buf) };
+    http_version_result http_version = parse_http_version(buf_vw);
+
+    if ( http_version.ec != parse_ec::ok) {
+        *ret = static_cast<int>(http_version.ec);
         return NULL;
     }
+    
+    buf = http_version.left.data();
+    *minor_version = http_version.minor_version;
+
     /* skip space */
     if (*buf != ' ') {
         *ret = -1;
