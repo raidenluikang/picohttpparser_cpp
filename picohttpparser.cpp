@@ -112,48 +112,32 @@ token_to_eol_result get_token_to_eol(const std::string_view buf)
 }
 
 
-static const char* is_complete(const char* buf, const char* buf_end, size_t last_len, int* ret)
+
+parse_ec is_complete(const std::string_view buf, size_t last_len)
 {
-    int ret_cnt = 0;
-    buf = last_len < 3 ? buf : buf + last_len - 3;
-
-    while (buf != buf_end) 
+    const size_t start_pos = last_len < 3 ? 0 : last_len - 3;
+    for (size_t index = start_pos, ret_cnt = 0; index < buf.size(); ++index)
     {
-        if (*buf == '\015') 
+        switch (buf[index]) 
         {
-            ++buf;
-            if (buf == buf_end)
-            {
-                *ret = -2;
-                return NULL;
-            }
+        case CR:
+            if (++index == buf.size())
+                return parse_ec::partial;
 
-            //EXPECT_CHAR('\012');
-            if (*buf++ != '\012') 
-            {
-               * ret = -1;                                                                                                                 
-                return NULL;                                                                                                               
-            }
+            if (buf[index] != LF)
+                return parse_ec::failed;
+            [[fallthrough]];
+        case LF:
             ++ret_cnt;
-        }
-        else if (*buf == '\012') {
-            ++buf;
-            ++ret_cnt;
-        }
-        else 
-        {
-            ++buf;
+        break;
+        default:
             ret_cnt = 0;
+        break;
         }
-        
         if (ret_cnt == 2) 
-        {
-            return buf;
-        }
+            return parse_ec::ok;
     }
-
-    *ret = -2;
-    return NULL;
+    return parse_ec::partial;
 }
 
 
@@ -898,9 +882,15 @@ response_result phr_parse_response(const std::span<const char> buf_start, std::s
 
     /* if last_len != 0, check if the response is complete (a fast countermeasure
        against slowloris */
-    if (last_len != 0 && is_complete(buf, buf_end, last_len, &r) == NULL) {
-        result.ec = static_cast<parse_ec>(r);
-        return result;
+    
+
+    if (last_len != 0 ) {
+        std::string_view buf_vw{ buf, static_cast<size_t>(buf_end - buf) };
+        parse_ec cpl_res = is_complete(buf_vw, last_len);
+        if (cpl_res != parse_ec::ok) {
+            result.ec = cpl_res;
+            return result;
+        }
     }
     int minor_version = -1;
     int status = 0;
@@ -936,10 +926,20 @@ parse_result phr_parse_headers(const std::span<const char> buf_start, std::span<
 
     /* if last_len != 0, check if the response is complete (a fast countermeasure
        against slowloris */
-    if (last_len != 0 && is_complete(buf, buf_end, last_len, &r) == NULL) {
-        result.ec = static_cast<parse_ec>(r);
-        return result;
-        //return r;
+    
+
+    if (last_len != 0 ) 
+    {
+        std::string_view buf_vw{ buf, static_cast<size_t>(buf_end - buf) };
+        
+        parse_ec cpl_res = is_complete(buf_vw, last_len);
+        
+        if (cpl_res != parse_ec::ok) 
+        {
+            result.ec = cpl_res;
+            return result;
+        }
+        
     }
     size_t num_headers = 0;
 
@@ -969,9 +969,14 @@ request_result phr_parse_request(const std::span<const char> buf_start, std::spa
 
     /* if last_len != 0, check if the request is complete (a fast countermeasure
        againt slowloris */
-    if (last_len != 0 && is_complete(buf, buf_end, last_len, &r) == NULL) {
-        result.ec = static_cast<parse_ec>(r);
-        return result;
+    
+    if (last_len != 0 ) {
+        std::string_view buf_vw{ buf, static_cast<size_t>(buf_end - buf) };
+        parse_ec cpl_res = is_complete(buf_vw, last_len);
+        if (cpl_res != parse_ec::ok) {
+            result.ec = cpl_res;
+            return result;
+        }
     }
 
     const char* method = nullptr;
