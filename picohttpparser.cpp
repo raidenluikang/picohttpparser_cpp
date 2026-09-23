@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <numeric>
 #include <array>
+#include <ranges>
 
 #include "picohttpparser.hpp"
 
@@ -31,6 +32,12 @@ namespace // anonymous namespace
     {
         return c != '\t' && is_ascii_control(c);
     }
+
+    constexpr bool space_or_tab(char c) noexcept
+    {
+        return (c == ' ') || (c == '\t');
+    }
+
 
 //constexpr char token_char_map[] =
 //"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
@@ -69,7 +76,7 @@ struct advance_result
     std::string_view token;
     parse_ec ec;
 
-    constexpr advance_result& unexpected(parse_ec ec) noexcept
+    constexpr advance_result  unexpected(parse_ec ec) noexcept
     {
         this->ec = ec;
         return *this;
@@ -92,11 +99,11 @@ constexpr advance_result advance_token(const std::string_view buf) noexcept
 
 struct token_to_eol_result
 {
-    std::string_view left;
+    ptrdiff_t processed;
     std::string_view token;
     parse_ec ec;
     
-   constexpr token_to_eol_result& unexpected(parse_ec ec) noexcept 
+   constexpr token_to_eol_result  unexpected(parse_ec ec) noexcept 
    {
         this->ec = ec;
         return *this;
@@ -115,7 +122,7 @@ constexpr token_to_eol_result get_token_to_eol(const std::string_view buf) noexc
     switch (*ctl_it)
     {
     case LF:
-        result.left = std::string_view(std::next(ctl_it), buf.cend());
+        result.processed = std::distance(buf.cbegin(), std::next(ctl_it));  //std::string_view(std::next(ctl_it), buf.cend());
         return result;
     case CR:
     {
@@ -125,7 +132,7 @@ constexpr token_to_eol_result get_token_to_eol(const std::string_view buf) noexc
         if (*lf_it != LF)
             return result.unexpected(parse_ec::failed);
 
-        result.left = std::string_view( std::next(lf_it), buf.cend());
+        result.processed = std::distance(buf.cbegin(), std::next(lf_it)); //std::string_view( std::next(lf_it), buf.cend());
         return result;
     }
     default:
@@ -198,7 +205,14 @@ struct http_version_result
     std::string_view left;
     int minor_version;
     parse_ec ec;
+
+    constexpr http_version_result unexpected(parse_ec ec) noexcept
+    {
+        this->ec = ec;
+        return *this;
+    }
 };
+
 
 constexpr http_version_result parse_http_version(const std::string_view buf) noexcept
 {
@@ -206,27 +220,17 @@ constexpr http_version_result parse_http_version(const std::string_view buf) noe
 
     constexpr std::string_view http_prefix = "HTTP/1."sv;
 
-
     http_version_result result{};
 
     /* we want at least [HTTP/1.<two chars>] to try to parse */
     if (buf.length() < http_prefix.length() + 2) //+2 chars
-    {
-        result.ec = parse_ec::partial;
-        return result;
-    }
+        return result.unexpected(parse_ec::partial);
     
     if (!buf.starts_with(http_prefix))
-    {
-        result.ec = parse_ec::failed;
-        return result;
-    }
+        return result.unexpected(parse_ec::failed);
 
-    if (!is_ascii_digit( buf[ http_prefix.length() ] ) ) 
-    {
-        result.ec = parse_ec::failed;
-        return result;
-    }
+    if (!is_ascii_digit(buf[http_prefix.length()]))
+        return result.unexpected(parse_ec::failed);
     
     result.minor_version =  buf[http_prefix.length()] - '0';
     result.left = buf.substr(http_prefix.length() + 1);
@@ -234,94 +238,110 @@ constexpr http_version_result parse_http_version(const std::string_view buf) noe
     return result;
 }
 
-static const char* parse_headers(const char* buf, const char* buf_end, struct phr_header* headers, size_t* num_headers,
-    size_t max_headers, int* ret)
+struct headers_result
 {
-    for (;; ++*num_headers) {
-        if (buf == buf_end) {
-            *ret = -2; return 0;
-        };
-        if (*buf == '\015') {
-            ++buf;
-            if (buf == buf_end) {
-                *ret = -2; return 0;
-            }; if (*buf++ != '\012') {
-                *ret = -1; return 0;
-            };;
+    size_t processed;
+    parse_ec ec;
+    size_t num_headers;
+
+    constexpr headers_result unexpected(parse_ec ec) noexcept {
+        this->ec = ec;
+        return *this;
+    }
+};
+
+struct header_list
+{
+    std::span<phr_header> list;
+    size_t index;
+};
+
+headers_result parse_headers(const std::string_view buf, header_list headers)
+{
+    headers_result result{};
+    result.num_headers = headers.index;
+
+    size_t& index = result.processed;
+    size_t& num_headers = result.num_headers;
+
+    for (;; ++num_headers) {
+         
+        if (index == buf.size())
+            return result.unexpected(parse_ec::partial);
+
+        if (buf[index] == CR) {
+            ++index;
+            
+            if (index == buf.size())
+                return result.unexpected(parse_ec::partial);
+            
+            if (buf[index++] != LF)
+                return result.unexpected(parse_ec::failed);
+            
             break;
         }
-        else if (*buf == '\012') {
-            ++buf;
+        else if (buf[index] == LF) 
+        {
+            ++index;
             break;
         }
-        if (*num_headers == max_headers) {
-            *ret = -1;
-            return NULL;
-        }
-        if (!(*num_headers != 0 && (*buf == ' ' || *buf == '\t'))) {
+        
+        if (num_headers == headers.list.size())
+            return result.unexpected(parse_ec::failed);
+
+        if (!(num_headers != 0 && space_or_tab(buf[index]) ) )
+        {
             /* parsing name, but do not discard SP before colon, see
              * http://www.mozilla.org/security/announce/2006/mfsa2006-33.html */
-            const char* name  = headers[*num_headers].name.data();
-            size_t len = headers[*num_headers].name.length();
 
-            {
-                std::string_view buf_vw{ buf, static_cast<size_t>(buf_end - buf) };
-                token_result tk_res = parse_token(buf_vw, ':'); //, &name, &len, ':', ret);
-                name = tk_res.token.data();
-                len = tk_res.token.length();
-                buf += tk_res.token.length();
-            }
-            
-            headers[*num_headers].name = std::string_view(name, len);
+            token_result tk_res = parse_token(buf.substr(index), ':');
+           
+            if (tk_res.ec != parse_ec::ok)
+                return result.unexpected(tk_res.ec);
 
-            if (buf == NULL) {
-                return NULL;
-            }
-            if (len == 0) {
-                *ret = -1;
-                return NULL;
-            }
-            ++buf;
-            for (;; ++buf) {
-                if (buf == buf_end) {
-                    *ret = -2; return 0;
-                };
-                if (!(*buf == ' ' || *buf == '\t')) {
-                    break;
-                }
-            }
+            std::string_view name = tk_res.token;
+            index += tk_res.token.length();
+
+            headers.list[num_headers].name = name;
+
+            if (name.empty())
+                return result.unexpected(parse_ec::failed);
+
+            assert(buf[index] == ':');
+            ++index; // skip the ':'
+
+            // find non space or tab
+            const auto nst_iter = std::find_if_not(buf.cbegin() + index, buf.cend(), space_or_tab);
+            if (nst_iter == buf.cend())
+                return result.unexpected(parse_ec::partial);
+
+            index = nst_iter - buf.cbegin();
         }
-        else {
-            headers[*num_headers].name = std::string_view{};
+        else 
+        {
+            headers.list[num_headers].name = std::string_view{};
             
         }
-        const char* value;
-        size_t value_len;
-        std::string_view buf_vw{ buf, static_cast<size_t>(buf_end - buf) };
-        token_to_eol_result eol_res = get_token_to_eol(buf_vw);
 
-        if ( eol_res.ec != parse_ec::ok) {
-            *ret = static_cast<int>(eol_res.ec);
-            return NULL;
-        }
         
-        buf = eol_res.left.data();
-        value = eol_res.token.data();
-        value_len = eol_res.token.length();
+        token_to_eol_result eol_res = get_token_to_eol(buf.substr(index));
 
+        if (eol_res.ec != parse_ec::ok)
+            return result.unexpected(eol_res.ec);
+        
+        index += eol_res.processed;
+        std::string_view value = eol_res.token;
+        
         /* remove trailing SPs and HTABs */
-        const char* value_end = value + value_len;
-        for (; value_end != value; --value_end) {
-            const char c = *(value_end - 1);
-            if (!(c == ' ' || c == '\t')) {
-                break;
-            }
+        {
+            auto rv = value | std::views::reverse;
+            const auto it = std::ranges::find_if_not(rv, space_or_tab);
+            value.remove_suffix(std::ranges::distance(rv.begin(), it) );
         }
-        
-        headers[*num_headers].value = std::string_view{ value, (size_t)(value_end - value) };
-        //headers[*num_headers].value_len = value_end - value;
+        headers.list[num_headers].value = value; 
     }
-    return buf;
+   
+    return result;
 }
 
 static const char* parse_request(const char* buf, const char* buf_end, const char** method, size_t* method_len, const char** path,
@@ -435,7 +455,16 @@ static const char* parse_request(const char* buf, const char* buf_end, const cha
         return NULL;
     }
 
-    return parse_headers(buf, buf_end, headers, num_headers, max_headers, ret);
+    header_list header_lst;
+    header_lst.list = std::span<phr_header>(headers, max_headers);
+    header_lst.index = *num_headers;
+
+    headers_result hd_res =  parse_headers(std::string_view{ buf, buf_end }, header_lst);
+    *ret = (int)hd_res.ec;
+    
+    *num_headers = hd_res.num_headers;
+
+    return buf + hd_res.processed;
 }
 
 
@@ -510,7 +539,7 @@ static const char* parse_response(const char* buf, const char* buf_end, int* min
         return NULL;
     }
 
-    buf = eol_res.left.data();
+    buf += eol_res.processed;
     *msg = eol_res.token.data();
     *msg_len = eol_res.token.length();
 
@@ -530,8 +559,15 @@ static const char* parse_response(const char* buf, const char* buf_end, int* min
         *ret = -1;
         return NULL;
     }
+    header_list hlist;
+    hlist.list = std::span<phr_header>(headers, max_headers);
+    hlist.index = *num_headers;
 
-    return parse_headers(buf, buf_end, headers, num_headers, max_headers, ret);
+    headers_result hd_res =  parse_headers(std::string_view{ buf, buf_end }, hlist);
+    *ret = (int)hd_res.ec;
+    *num_headers = hd_res.num_headers;
+
+    return buf + hd_res.processed;
 }
 
 
@@ -928,7 +964,8 @@ response_result phr_parse_response(const std::span<const char> buf_start, std::s
     result.msg = msg == NULL ? std::string_view{} : std::string_view{ msg, msg_len };
     result.num_headers = num_headers;
 
-    if (buf == NULL) {
+    if (r != 0) 
+    {
         result.ec = static_cast<parse_ec>(r);
         return result;
     }
@@ -940,46 +977,33 @@ response_result phr_parse_response(const std::span<const char> buf_start, std::s
 
 parse_result phr_parse_headers(const std::span<const char> buf_start, std::span<phr_header> headers, size_t last_len)
 {
-    const char* buf = buf_start.data(), * buf_end = buf + buf_start.size();
+    //const char* buf = buf_start.data(), * buf_end = buf + buf_start.size();
+    const std::string_view buf(buf_start.data(), buf_start.size());
     size_t max_headers = headers.size();
     
     parse_result result{};
 
-    int r = 0;
-
     /* if last_len != 0, check if the response is complete (a fast countermeasure
        against slowloris */
-    
-
-    if (last_len != 0 ) 
+    if (last_len != 0 and (result.ec = is_complete(buf, last_len)) != parse_ec::ok)
     {
-        std::string_view buf_vw{ buf, static_cast<size_t>(buf_end - buf) };
-        
-        parse_ec cpl_res = is_complete(buf_vw, last_len);
-        
-        if (cpl_res != parse_ec::ok) 
-        {
-            result.ec = cpl_res;
             return result;
-        }
-        
-    }
-    size_t num_headers = 0;
-
-    if ((buf = parse_headers(buf, buf_end, headers.data(), &num_headers, max_headers, &r)) == NULL) {
-        result.num_headers = num_headers;
-        result.ec = static_cast<parse_ec>(r);
-        return result;
     }
 
-    result.num_headers = num_headers;
-    result.ec = parse_ec::ok;
-    result.bsz = (size_t)(buf - buf_start.data());
+    
+    header_list hlist;
+    hlist.list = headers;
+    hlist.index = 0;
+
+    headers_result hd_res = parse_headers(buf, hlist);
+    result.num_headers = hd_res.num_headers;
+    result.ec  = hd_res.ec;
+    result.bsz = hd_res.processed; 
+    
     return result;
 }
 
-//int phr_parse_request(const char* buf_start, size_t len, const char** method, size_t* method_len, const char** path,
-//    size_t* path_len, int* minor_version, struct phr_header* headers, size_t* num_headers, size_t last_len)
+
 request_result phr_parse_request(const std::span<const char> buf_start, std::span<phr_header> headers, size_t last_len)
 {
     const char* buf = buf_start.data(), * buf_end = buf_start.data() + buf_start.size();
@@ -1018,7 +1042,7 @@ request_result phr_parse_request(const std::span<const char> buf_start, std::spa
     result.method = (method != nullptr ? std::string_view{ method, method_len } : std::string_view{});
     result.path = (path != nullptr ? std::string_view(path, path_len) : std::string_view{});
 
-    if (buf == NULL) {
+    if (r != 0) {
         result.ec = static_cast<parse_ec>(r);
         return result;
         
