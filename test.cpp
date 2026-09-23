@@ -17,7 +17,7 @@
 #include <string>
 #include <cstdio>
 #include <iostream>
-
+#include <memory>
 
 namespace picotest
 {
@@ -668,17 +668,9 @@ static constexpr size_t INPUTBUF_SIZE = 4096;   /* с запасом, ориги
 
 int main(void)
 {
-    //long pagesize = sysconf(_SC_PAGESIZE);
-    //assert(pagesize >= 1);
-
-    //inputbuf = mmap(NULL, pagesize * 3, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
-    //assert(inputbuf != MAP_FAILED);
-    //inputbuf += pagesize * 2;
-    //ok(mprotect(inputbuf - pagesize, pagesize, PROT_READ | PROT_WRITE) == 0);
-
-    char* inputbase = (char*)malloc(INPUTBUF_SIZE);
-    assert(inputbase != NULL);
-    inputbuf = inputbase + INPUTBUF_SIZE;   /* конец буфера, как раньше конец страницы */
+    std::unique_ptr<char[]> const inputbase = std::make_unique_for_overwrite<char[]>(INPUTBUF_SIZE);
+    
+    inputbuf = inputbase.get() + INPUTBUF_SIZE;   /* конец буфера, как раньше конец страницы */
 
     struct picotest::test_t main_test;
 
@@ -690,11 +682,9 @@ int main(void)
     main_test.subtest("chunked-leftdata", test_chunked_leftdata);
     main_test.subtest("chunked-overhead", test_chunked_overhead);
 
-    //munmap(inputbuf - pagesize * 2, pagesize * 3);
-
-    free(inputbase);
 
     main_test.done();
-    
+    std::cerr << "MAIN TEST ENDS WITH " << (main_test.failed ? " FAILED " : " OK ") << std::endl;
+
     return main_test.failed ? -1 : 0;
 }

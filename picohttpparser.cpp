@@ -25,7 +25,11 @@ namespace // anonymous namespace
     {
         return static_cast<unsigned char>(c) < 32 || c == 127; /*DEL = 127 code*/
     }
-
+    
+    constexpr bool is_ascii_control_except_tab(char c) noexcept
+    {
+        return c != '\t' && is_ascii_control(c);
+    }
 
 constexpr char token_char_map[] =
 "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
@@ -37,134 +41,74 @@ constexpr char token_char_map[] =
 "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
 "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 
+constexpr char CR = '\015';   // 0x0D, Carriage Return
+constexpr char LF = '\012';   // 0x0A, Line Feed
 
 struct advance_result
 {
     std::string_view token;
     parse_ec ec;
+
+    advance_result& unexpected(parse_ec ec) {
+        this->ec = ec;
+        return *this;
+    }
 };
 
 advance_result advance_token(const std::string_view buf)
 {
     advance_result result{};
-
     const auto it = std::find_if(buf.cbegin(), buf.cend(), [](const char c) {
         return c == ' ' || is_ascii_control(c);
     });
-
     if (it == buf.cend())
-    {
-        result.ec = parse_ec::partial;
-    }
-    else
+        return result.unexpected(parse_ec::partial);
     if (*it != ' ')   // остановились на control-символе, не на пробеле
-    {
-        result.ec = parse_ec::failed;
-    }
-    else 
-    {
-        result.ec = parse_ec::ok;
-        result.token = buf.substr(0, it - buf.cbegin());
-    }
-    
-    return result;
+        return result.unexpected(parse_ec::failed);
+    result.token = std::string_view(buf.cbegin(), it);
+    return result ;
 }
 
-
-static const char* get_token_to_eol(const char* buf, const char* buf_end, const char** token, size_t* token_len, int* ret)
+struct token_to_eol_result
 {
-    const char* token_start = buf;
-
- 
-    /* find non-printable char within the next 8 bytes, this is the hottest code; manually inlined */
-    while (buf_end - buf >= 8) [[likely]]
-    {
-
-
-        
-        if (!is_printable_ascii(*buf)) [[unlikely]] 
-            goto NonPrintable; 
-        ++buf;
-        
-        
-        if (!is_printable_ascii(*buf)) [[unlikely]] 
-            goto NonPrintable; 
-        ++buf;
-        
-        
-        if (!is_printable_ascii(*buf)) [[unlikely]] 
-            goto NonPrintable; 
-        ++buf;
-        
-        
-        if (!is_printable_ascii(*buf)) [[unlikely]] 
-            goto NonPrintable; 
-        ++buf;
-        
-        
-        if (!is_printable_ascii(*buf)) [[unlikely]] 
-            goto NonPrintable; 
-        ++buf;
-        
-        
-        if (!is_printable_ascii(*buf)) [[unlikely]] 
-            goto NonPrintable; 
-        ++buf;
-        
-        
-        if (!is_printable_ascii(*buf)) [[unlikely]] 
-            goto NonPrintable; 
-        ++buf;
-        
-        
-        if (!is_printable_ascii(*buf)) [[unlikely]] 
-            goto NonPrintable; 
-        ++buf;
-        
- 
-        continue;
-    NonPrintable:
-        if (( ((unsigned char)*buf < '\040') && (*buf != '\011')) || (*buf == '\177')) [[likely]]{
-            goto FOUND_CTL;
-        }
-        ++buf;
-    }
- 
+    std::string_view left;
+    std::string_view token;
+    parse_ec ec;
     
-    for (;; ++buf) {
-        if (buf == buf_end) {
-            *ret = -2; return 0;
-        };
-        if ((!is_printable_ascii(*buf))) [[unlikely]]
-        {
-            if ((((unsigned char)*buf < '\040') && (*buf != '\011')) || (*buf == '\177')) [[likely]] {
-                goto FOUND_CTL;
-            }
-        }
+    token_to_eol_result& unexpected(parse_ec ec) {
+        this->ec = ec;
+        return *this;
     }
-FOUND_CTL:
-    if ((*buf == '\015')) [[likely]]
-    {
-        ++buf;
-        if (buf == buf_end) {
-            *ret = -2; return 0;
-        } 
-        if (*buf++ != '\012') {
-            *ret = -1; return 0;
-        }
-        *token_len = buf - 2 - token_start;
-    }
-    else if (*buf == '\012') {
-        *token_len = buf - token_start;
-        ++buf;
-    }
-    else {
-        *ret = -1;
-        return NULL;
-    }
-    *token = token_start;
+};
 
-    return buf;
+token_to_eol_result get_token_to_eol(const std::string_view buf)
+{
+    token_to_eol_result result{};
+
+    const auto ctl_it = std::find_if(buf.cbegin(), buf.cend(), is_ascii_control_except_tab);
+    if (ctl_it == buf.cend())
+        return result.unexpected(parse_ec::partial);
+
+    result.token = std::string_view(buf.cbegin(), ctl_it);   // общее для обеих веток
+    switch (*ctl_it)
+    {
+    case LF:
+        result.left = std::string_view(std::next(ctl_it), buf.cend());
+        return result;
+    case CR:
+    {
+        const auto lf_it = std::next(ctl_it);
+        if (lf_it == buf.cend())
+            return result.unexpected(parse_ec::partial);
+        if (*lf_it != LF)
+            return result.unexpected(parse_ec::failed);
+
+        result.left = std::string_view( std::next(lf_it), buf.cend());
+        return result;
+    }
+    default:
+        return result.unexpected(parse_ec::failed);
+    }
 }
 
 
@@ -356,9 +300,18 @@ static const char* parse_headers(const char* buf, const char* buf_end, struct ph
         }
         const char* value;
         size_t value_len;
-        if ((buf = get_token_to_eol(buf, buf_end, &value, &value_len, ret)) == NULL) {
+        std::string_view buf_vw{ buf, static_cast<size_t>(buf_end - buf) };
+        token_to_eol_result eol_res = get_token_to_eol(buf_vw);
+
+        if ( eol_res.ec != parse_ec::ok) {
+            *ret = static_cast<int>(eol_res.ec);
             return NULL;
         }
+        
+        buf = eol_res.left.data();
+        value = eol_res.token.data();
+        value_len = eol_res.token.length();
+
         /* remove trailing SPs and HTABs */
         const char* value_end = value + value_len;
         for (; value_end != value; --value_end) {
@@ -541,9 +494,19 @@ static const char* parse_response(const char* buf, const char* buf_end, int* min
     } while (0);
 
     /* get message including preceding space */
-    if ((buf = get_token_to_eol(buf, buf_end, msg, msg_len, ret)) == NULL) {
+    std::string_view buf_vw2{ buf, static_cast<size_t>(buf_end - buf) };
+    //if ((buf = get_token_to_eol(buf_vw2, msg, msg_len, ret)) == NULL) 
+    token_to_eol_result eol_res = get_token_to_eol(buf_vw2);
+    if (eol_res.ec != parse_ec::ok)
+    {
+        *ret = static_cast<int>(eol_res.ec);
         return NULL;
     }
+
+    buf = eol_res.left.data();
+    *msg = eol_res.token.data();
+    *msg_len = eol_res.token.length();
+
     if (*msg_len == 0) {
         /* ok */
     }
