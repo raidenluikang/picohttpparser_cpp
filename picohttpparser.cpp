@@ -1,7 +1,7 @@
 
-#include <assert.h>
-#include <stddef.h>
-#include <string.h>
+#include <cassert>
+#include <cstddef>
+
 
 #include <string_view>
 #include <algorithm>
@@ -151,8 +151,6 @@ constexpr token_to_eol_result get_token_to_eol(const std::string_view buf) noexc
     }
 }
 
-
-
 constexpr parse_ec is_complete(const std::string_view buf, size_t last_len) noexcept
 {
     const size_t start_pos = last_len < 3 ? 0 : last_len - 3;
@@ -214,7 +212,7 @@ constexpr token_result parse_token(const std::string_view buf, char next_char) n
 struct http_version_result
 {
     size_t processed;
-    int minor_version;
+    int minor_version = -1;
     parse_ec ec;
 
     constexpr http_version_result unexpected(parse_ec ec) noexcept
@@ -337,11 +335,10 @@ headers_result parse_headers(const std::string_view buf, std::span<phr_header> h
     return result;
 }
 
-static request_result parse_request(const std::string_view buf,  std::span<phr_header> headers)
+request_result parse_request(const std::string_view buf,  std::span<phr_header> headers)
 {
     request_result result{};
      
-
     /* skip first empty line (some clients add CRLF after POST content) */
     if (buf.empty())
         return result.unexpected(parse_ec::partial);
@@ -449,7 +446,6 @@ response_result parse_response(const std::string_view buf, std::span<phr_header>
 
     size_t& index = result.bsz;
     
-    //buf = http_version.left.data();
     result.minor_version = http_version.minor_version;
 
     /* skip space */
@@ -468,7 +464,6 @@ response_result parse_response(const std::string_view buf, std::span<phr_header>
     if (index + 4 > buf.size())
         return result.unexpected(parse_ec::partial);
     
-    //int res_ = 0; 
     if ( ( ! is_ascii_digit(buf[index + 0]) ) ||
          ( ! is_ascii_digit(buf[index + 1]) ) ||
          ( ! is_ascii_digit(buf[index + 2]) ) 
@@ -479,8 +474,6 @@ response_result parse_response(const std::string_view buf, std::span<phr_header>
     result.status = 100 * (buf[index + 0] - '0') + 10 * (buf[index + 1] - '0') + 1 * (buf[index + 2] - '0');
     index += 3;
     
-    
-
     /* get message including preceding space */
     token_to_eol_result eol_res = get_token_to_eol(buf.substr(index));
     if (eol_res.ec != parse_ec::ok)
@@ -519,7 +512,7 @@ response_result parse_response(const std::string_view buf, std::span<phr_header>
 }
 
 
-static constexpr int decode_hex(const int ch) noexcept
+constexpr int decode_hex(const int ch) noexcept
 {
     if ('0' <= ch && ch <= '9') {
         return ch - '0';
@@ -535,15 +528,15 @@ static constexpr int decode_hex(const int ch) noexcept
     }
 }
 
-static constexpr bool allowed_after_hex(const int c) noexcept 
+constexpr bool allowed_after_hex(const int c) noexcept 
 {
     switch (c)
     {
-    case ' ':
+    case SP:
     case '\011':
     case ';':
-    case '\012':
-    case '\015':
+    case LF:
+    case CR:
         return true;
     default:
         return false;
@@ -578,19 +571,6 @@ struct hex_result
         return ix;
     }
 };
-
-constexpr size_t find_first_of(const std::string_view buf, size_t off, char ca, char cb)
-{
-    while (off < buf.size()) {
-        if (buf[off] == ca || buf[off] == cb)
-            return off;
-        ++off;
-    }
-
-    return off;
-}
-
-
 
     struct phr_chunked_decoder_msm
     {
@@ -633,7 +613,8 @@ constexpr size_t find_first_of(const std::string_view buf, size_t off, char ca, 
         {
             if (dst != src && src < buf.size())
             {
-                memmove(buf.data() + dst, buf.data() + src, buf.size() - src);
+                //memmove(buf.data() + dst, buf.data() + src, buf.size() - src);
+                std::shift_left(buf.begin() + dst, buf.end(), src - dst);
             }
 
             result.buf_len = dst;
@@ -690,9 +671,10 @@ constexpr size_t find_first_of(const std::string_view buf, size_t off, char ca, 
         enum SwitchState chunkExt()
         {
             /* RFC 7230 A.2 "Line folding in chunk extensions is disallowed" */
-           // assert(src < buf.size());
-
-            src = find_first_of(buf_view, src,  CR , LF );
+            auto const cr_lf_iter = std::find_if(buf_view.cbegin() + src, buf_view.cend(), [](char c) {return c == CR || c == LF;});
+            
+            src = std::distance(buf_view.cbegin(), cr_lf_iter);
+                
 
             if (src == buf_view.size()) {
                 return SwitchState::do_exit;
@@ -738,14 +720,13 @@ constexpr size_t find_first_of(const std::string_view buf, size_t off, char ca, 
 
         enum SwitchState chunkData()
         {
-            // assert(src < buf.size());
-
             size_t avail = buf.size() - src;
             if (avail < decoder.bytes_left_in_chunk)
             {
                 if (dst != src)
                 {
-                    memmove(buf.data() + dst, buf.data() + src, avail);
+                    //memmove(buf.data() + dst, buf.data() + src, avail);
+                    std::shift_left(buf.begin() + dst, buf.end(), src - dst);
                 }
 
                 src += avail;
@@ -758,7 +739,8 @@ constexpr size_t find_first_of(const std::string_view buf, size_t off, char ca, 
 
             if (dst != src)
             {
-                memmove(buf.data() + dst, buf.data() + src, decoder.bytes_left_in_chunk);
+                //memmove(buf.data() + dst, buf.data() + src, decoder.bytes_left_in_chunk);
+                std::shift_left(buf.begin() + dst, buf.begin() + src + decoder.bytes_left_in_chunk, src - dst);
             }
 
             src += decoder.bytes_left_in_chunk;
@@ -875,8 +857,7 @@ response_result phr_parse_response(const std::span<const char> buf_start, std::s
     
     const std::string_view buf(buf_start.data(), buf_start.size());
 
-    /* if last_len != 0, check if the response is complete (a fast countermeasure
-       against slowloris */
+    /* if last_len != 0, check if the response is complete (a fast countermeasure against slowloris */
     if (last_len != 0 && (result.ec = is_complete(buf, last_len)) != parse_ec::ok)
         return result;
 
@@ -928,6 +909,6 @@ phr_decode_chunked_result phr_decode_chunked(struct phr_chunked_decoder& decoder
 
 bool phr_decode_chunked_is_in_data(const struct phr_chunked_decoder& decoder)
 {
-    return decoder._state == ChunkedState::chunk_data; //CHUNKED_IN_CHUNK_DATA;
+    return decoder._state == ChunkedState::chunk_data; 
 }
 
