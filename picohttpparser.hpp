@@ -22,8 +22,6 @@ struct phr_header
     std::string_view value;
 };
 
-
-
 enum class parse_ec
 {
     ok,
@@ -42,7 +40,7 @@ struct parse_result
 struct response_result : public parse_result
 {
     int minor_version = -1;
-    int status;
+    int status = 0;
     std::string_view msg;
 
     constexpr response_result unexpected(parse_ec ec) noexcept {
