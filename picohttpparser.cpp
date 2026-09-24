@@ -1,8 +1,6 @@
 
 #include <cassert>
 #include <cstddef>
-
-
 #include <string_view>
 #include <algorithm>
 #include <numeric>
@@ -47,18 +45,7 @@ namespace // anonymous namespace
         return value.substr(0, value.length() - counter);
     }
 
-//constexpr char token_char_map[] =
-//"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
-//"\0\1\0\1\1\1\1\1\0\0\1\1\0\1\1\0\1\1\1\1\1\1\1\1\1\1\0\0\0\0\0\0"
-//"\0\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\0\0\0\1\1"
-//"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\0\1\0\1\0"
-//"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
-//"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
-//"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
-//"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
-
 // bit i в mask[k] соответствует символу с кодом (64*k + i)
-
 constexpr size_t char_value_bits   = 256;
 constexpr size_t uint64_bits_count = 64;
 constexpr size_t mask_size = char_value_bits / uint64_bits_count;
@@ -911,4 +898,3 @@ bool phr_decode_chunked_is_in_data(const struct phr_chunked_decoder& decoder)
 {
     return decoder._state == ChunkedState::chunk_data; 
 }
-
