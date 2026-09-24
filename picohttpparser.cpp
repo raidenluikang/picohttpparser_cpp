@@ -3,24 +3,28 @@
 #include <cstddef>
 #include <string_view>
 #include <algorithm>
-#include <numeric>
 #include <array>
-#include <ranges>
 
 #include "picohttpparser.hpp"
 
 namespace // anonymous namespace
 {
 
+    constexpr char CR = '\015';   // 0x0D, Carriage Return
+    constexpr char LF = '\012';   // 0x0A, Line Feed
+    constexpr char SP = '\x20';   // 0x20, Space Character
+    constexpr char TAB = '\x09';  // 0x09, Tab space
+
     constexpr bool is_printable_ascii(char c) noexcept
     {
-        return c >= ' ' && c <= '~';
+        return c >= 32 && c <= 126;
     }
 
     constexpr bool is_ascii_digit(char c) noexcept
     {
-        return c >= '0' && c <= '9';
+        return c >= 48 && c <= 57;
     }
+
     constexpr bool is_ascii_control(char c) noexcept
     {
         return static_cast<unsigned char>(c) < 32 || c == 127; /*DEL = 127 code*/
@@ -28,21 +32,18 @@ namespace // anonymous namespace
     
     constexpr bool is_ascii_control_except_tab(char c) noexcept
     {
-        return c != '\t' && is_ascii_control(c);
+        return c != TAB && is_ascii_control(c);
     }
 
     constexpr bool space_or_tab(char c) noexcept
     {
-        return (c == ' ') || (c == '\t');
+        return (c == SP) || (c == TAB);
     }
 
     constexpr std::string_view remove_last_spaces_and_tabs(const std::string_view value) noexcept
     {
-        
-        auto rv = value | std::views::reverse;
-        const auto it = std::ranges::find_if_not(rv, space_or_tab);
-        size_t counter = std::ranges::distance(rv.begin(), it);
-        return value.substr(0, value.length() - counter);
+        const auto it = std::find_if_not(value.rbegin(), value.rend(), space_or_tab);
+        return std::string_view(value.begin(), it.base());
     }
 
 // bit i в mask[k] соответствует символу с кодом (64*k + i)
@@ -62,10 +63,6 @@ constexpr bool is_token_char(unsigned char c) noexcept
 {
     return (token_char_mask[c >> 6] >> (c & 63)) & 1ULL;
 }
-
-constexpr char CR = '\015';   // 0x0D, Carriage Return
-constexpr char LF = '\012';   // 0x0A, Line Feed
-constexpr char SP = '\x20';   // 0x20, Space Character
 
 struct advance_result
 {
@@ -422,8 +419,8 @@ request_result parse_request(const std::string_view buf,  std::span<phr_header> 
 response_result parse_response(const std::string_view buf, std::span<phr_header> headers)
 {
     response_result result{};
+
     /* parse "HTTP/1.x" */
-    
     http_version_result http_version = parse_http_version( buf );
 
     if (http_version.ec != parse_ec::ok)
@@ -621,10 +618,6 @@ struct hex_result
         enum SwitchState chunkSize()
         {
             assert(src < buf.size());
-            //if (src == buf.size())
-           // {
-           //     return SwitchState::do_exit;
-           // }
 
             hex_result hrs = { .value = decoder.bytes_left_in_chunk, .length = decoder._hex_count };
 
@@ -678,8 +671,6 @@ struct hex_result
         enum SwitchState chunkHeaderExpectLF()
         {
             assert(src < buf.size());
-            //if (src == buf.size())
-            //    return SwitchState::do_exit;
 
             if (buf[src] != LF)
             {
@@ -742,8 +733,6 @@ struct hex_result
         enum SwitchState chunkDataExpectCR()
         {
             assert(src < buf.size());
-            //if (src == buf.size())
-            //    return SwitchState::do_exit;
 
             if (buf[src] != CR ) {
                 result.ec = chunked_errc::error_occur;
@@ -757,8 +746,6 @@ struct hex_result
         enum SwitchState chunkDataExpectLF()
         {
              assert(src < buf.size());
-            //if (src == buf.size())
-            //    return SwitchState::do_exit;
 
             if (buf[src] != LF)
             {
@@ -791,7 +778,6 @@ struct hex_result
         enum SwitchState trailerLineMiddle()
         {
             //  assert(src < buf.size());
-
             const size_t pos = buf_view.find(LF, src);
             if (pos == buf_view.npos) {
                 src = buf.size();
