@@ -26,6 +26,7 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <chrono>
 
 #include "picohttpparser.hpp"
 
@@ -47,19 +48,19 @@ static constexpr char REQ[] =
 "\r\n"
 ;
 
-int main_bench(void)
+int main(void)
 {
-    //const char* method;
-    //size_t method_len;
-    //const char* path;
-    //size_t path_len;
-    //int minor_version;
     struct phr_header headers[32];
-    //size_t num_headers;
-    int i;
+    
     request_result ret;
-    for (i = 0; i < 10000000; i++) {
-        //num_headers = sizeof(headers) / sizeof(headers[0]);
+    
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    constexpr int LOOP = 10'000'000;
+
+    for (int i = 0; i < LOOP; i++) 
+    {
+      
         std::span<const char> req(REQ, sizeof(REQ) - 1);
         
         std::span<phr_header> hsp(headers, std::size(headers));
@@ -68,6 +69,11 @@ int main_bench(void)
         assert(ret.ec == parse_ec::ok);
         assert(ret.bsz == sizeof(REQ) - 1);
     }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+
+    double elapsed_time = std::chrono::duration<double>(end_time - start_time).count();
+    printf("LOOP: %d  elapsed: %.7f seconds\n", LOOP, elapsed_time);
 
     return 0;
 }
