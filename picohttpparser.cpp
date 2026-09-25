@@ -17,7 +17,7 @@ namespace // anonymous namespace
     [[nodiscard]] constexpr bool is_printable_ascii(char c) noexcept
     {
         //return ((unsigned char)(c)-040u < 0137u);
-        return c >= 32 && c <= 126;
+        return c >= 0x20 && c <= 0x7E;
     }
 
     [[nodiscard]] constexpr bool is_ascii_digit(char c) noexcept
@@ -27,7 +27,7 @@ namespace // anonymous namespace
 
     [[nodiscard]] constexpr bool is_ascii_control(char c) noexcept
     {
-        return static_cast<unsigned char>(c) < 32 || c == 127; /*DEL = 127 code*/
+        return static_cast<unsigned char>(c) < 0x20 || c == 0x7F; /*DEL = 127 code*/
     }
     
     [[nodiscard]] constexpr bool is_ascii_control_except_tab(char c) noexcept
@@ -40,15 +40,35 @@ namespace // anonymous namespace
         return (c == SP) || (c == TAB);
     }
 
-// bit i в mask[k] соответствует символу с кодом (64*k + i)
-constexpr char token_char_map[] = "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
-        "\0\1\0\1\1\1\1\1\0\0\1\1\0\1\1\0\1\1\1\1\1\1\1\1\1\1\0\0\0\0\0\0"
-        "\0\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\0\0\0\1\1"
-        "\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\0\1\0\1\0"
-        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
-        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
-        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
-        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+
+//constexpr char token_char_map[] = "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+//        "\0\1\0\1\1\1\1\1\0\0\1\1\0\1\1\0\1\1\1\1\1\1\1\1\1\1\0\0\0\0\0\0"
+//        "\0\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\0\0\0\1\1"
+//        "\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\0\1\0\1\0"
+//        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+//        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+//        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+//        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+
+constexpr bool token_char_map[256] = { 
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, true, false, true, true, true, true, true, false, false, true, true, false, true, true, false,
+    true, true, true, true, true, true, true, true, true, true, false, false, false, false, false, false,
+    false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, false, false, false, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true, true, true, true, false, true, false, true, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+};
+
 [[nodiscard]] constexpr bool is_token_char(unsigned char c) noexcept
 {
     return  token_char_map[c];
@@ -160,33 +180,22 @@ FOUND_CTL:
         ++first;
         if (first == last)  
         {
-            //partial
             ec = parse_ec::partial;
         }
         else if (*first != LF) {
-            // failed
             ec = parse_ec::failed;
         } else {
             ++first;
             ec = static_cast<parse_ec>(+2);
         }
-        //return first;
-        //EXPECT_CHAR('\012');
-        //*token_len = buf - 2 - token_start;
     }
     else if (*first == LF ) {
-        //*token_len = buf - token_start;
-        //++buf;
         ec = static_cast<parse_ec>(+1);
         ++first;
-        //return first;
     }
     else {
         ec = parse_ec::failed;
-        //return first;
     }
-    
-
     return first;
 }
 

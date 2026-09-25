@@ -666,7 +666,7 @@ static void test_chunked_overhead(struct picotest::test_t& test)
 
 static constexpr size_t INPUTBUF_SIZE = 4096;   /* с запасом, оригинал давал одну страницу (обычно 4096) */
 
-int main_test(void)
+int main(void)
 {
     std::unique_ptr<char[]> const inputbase = std::make_unique_for_overwrite<char[]>(INPUTBUF_SIZE);
     
