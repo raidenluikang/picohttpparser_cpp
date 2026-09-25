@@ -16,6 +16,7 @@ namespace // anonymous namespace
     [[maybe_unused]]
     [[nodiscard]] constexpr bool is_printable_ascii(char c) noexcept
     {
+        //return ((unsigned char)(c)-040u < 0137u);
         return c >= 32 && c <= 126;
     }
 
@@ -50,7 +51,7 @@ constexpr char token_char_map[] = "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\
         "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 [[nodiscard]] constexpr bool is_token_char(unsigned char c) noexcept
 {
-    return  token_char_map[c];//(token_char_mask[c >> 6] >> (c & 63)) & 1ULL;
+    return  token_char_map[c];
 }
 
 
@@ -87,42 +88,106 @@ template <typename Iterator>
 
 
 template <typename Iterator>
-[[nodiscard]] constexpr Iterator get_token_to_eol(Iterator first, Iterator last, parse_ec & ec) noexcept
+[[nodiscard]]  Iterator get_token_to_eol(Iterator first, Iterator last, parse_ec & ec) noexcept
 {
-    auto ctl_it = std::find_if(first, last, is_ascii_control_except_tab);
-    
-    if (ctl_it == last) [[unlikely]]
+
+    while (last - first >= 8) 
     {
-        ec = parse_ec::partial;
-    }
-    else {
-        switch (*ctl_it)
-        {
-        case LF:
-            ec = static_cast<parse_ec>(+1);
-            ++ctl_it;
-            break;
-        case CR:
-        {
-            ++ctl_it;
-            if (ctl_it == last)
-                ec = parse_ec::partial;
-            else if (*ctl_it != LF)
-                ec = parse_ec::failed;
-            else
-            {
-                ec = static_cast<parse_ec>(+2);
-                ++ctl_it; // skip LF 
-            }
-            break;
-        }
-        default:
-            ec = parse_ec::failed;
-            break;
-        }
+        if (!is_printable_ascii(*first)) [[unlikely]]
+            goto NonPrintable;
+        ++first;
+
+
+        if (!is_printable_ascii(*first)) [[unlikely]]
+            goto NonPrintable;
+        ++first;
+
+
+        if (!is_printable_ascii(*first)) [[unlikely]]
+            goto NonPrintable;
+        ++first;
+
+
+        if (!is_printable_ascii(*first)) [[unlikely]]
+            goto NonPrintable;
+        ++first;
+
+
+        if (!is_printable_ascii(*first)) [[unlikely]]
+            goto NonPrintable;
+        ++first;
+
+
+        if (!is_printable_ascii(*first)) [[unlikely]]
+            goto NonPrintable;
+        ++first;
+
+
+        if (!is_printable_ascii(*first)) [[unlikely]]
+            goto NonPrintable;
+        ++first;
+
+
+        if (!is_printable_ascii(*first)) [[unlikely]]
+            goto NonPrintable;
+        ++first;
+        
+        continue;
+
+    NonPrintable:
+        if ( is_ascii_control_except_tab(*first) ) 
+            goto FOUND_CTL;
+        ++first;
+
     }
 
-    return ctl_it;
+    for (;; ++first) {
+        if (first == last)
+        {
+            ec = parse_ec::partial;
+            return first;
+        }
+
+        if (!is_printable_ascii(*first))  
+        {
+            if (is_ascii_control_except_tab(*first)) 
+                goto FOUND_CTL;
+        }
+    }
+FOUND_CTL:
+    if (*first == CR ) 
+    {
+        ++first;
+        if (first == last)  
+        {
+            //partial
+            ec = parse_ec::partial;
+        }
+        else if (*first != LF) {
+            // failed
+            ec = parse_ec::failed;
+        } else {
+            ++first;
+            ec = static_cast<parse_ec>(+2);
+        }
+        //return first;
+        //EXPECT_CHAR('\012');
+        //*token_len = buf - 2 - token_start;
+    }
+    else if (*first == LF ) {
+        //*token_len = buf - token_start;
+        //++buf;
+        ec = static_cast<parse_ec>(+1);
+        ++first;
+        //return first;
+    }
+    else {
+        ec = parse_ec::failed;
+        //return first;
+    }
+    
+
+    return first;
 }
 
 template <typename Iterator>
@@ -166,10 +231,10 @@ template <typename Iterator>
         return c == next_char || !is_token_char(c);
         });
 
-    if (iter == last) [[unlikely]]
+    if (iter == last)  
         ec = parse_ec::partial;
     else
-    if (*iter != next_char) [[unlikely]] //non token char
+    if (*iter != next_char)  
         ec = parse_ec::failed;
     else
         ec = parse_ec::ok;
@@ -258,17 +323,17 @@ template <typename Iterator>
 
             
             auto token_begin = first;
-            auto token_end = parse_token(token_begin, last, COLON, ec);
+            first = parse_token(token_begin, last, COLON, ec);
 
             if (ec != parse_ec::ok)
             {
                 num_headers = num;
-                return token_end;
+                return first;
             }
 
-            headers[num].name = std::string_view(token_begin, token_end);//tk_res.token;
+            headers[num].name = std::string_view(token_begin, first);
             
-            first = token_end;
+            
 
             if (headers[num].name.empty())
             {
@@ -296,22 +361,23 @@ template <typename Iterator>
         }
 
         auto token_begin = first;
-        auto token_end = get_token_to_eol(token_begin, last, ec);
+        first = get_token_to_eol(token_begin, last, ec);
         
         ptrdiff_t ec_skip = static_cast<ptrdiff_t>(ec);
         
         if (ec_skip < 0) {
             num_headers = num;
-            return token_end;
+            return first;
         }
         
-        first = token_end;
+        
 
-        auto token_last = remove_last_spaces_and_tabs(token_begin, token_end - ec_skip);
+        auto token_last = remove_last_spaces_and_tabs(token_begin, first - ec_skip);
 
         headers[num].value = std::string_view(token_begin, token_last);
         
         ec = parse_ec::ok;//clear status
+         
     }
     
     num_headers = num;
@@ -335,7 +401,6 @@ request_result parse_request(std::span<const char> buf,  std::span<phr_header> h
         return result.unexpected(parse_ec::partial, first - start_buf);
     
     
-
     if (*first == CR)
     {
         ++first;
@@ -355,7 +420,7 @@ request_result parse_request(std::span<const char> buf,  std::span<phr_header> h
     {
         parse_ec ec{};
         auto token_begin = first;
-        first = parse_token(token_begin, buf.end(), SP, ec);
+        first = parse_token(token_begin, last, SP, ec);
 
         if (ec != parse_ec::ok)
         {

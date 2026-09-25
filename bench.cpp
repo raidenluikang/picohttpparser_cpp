@@ -52,20 +52,19 @@ int main(void)
 {
     struct phr_header headers[32];
     
-    request_result ret;
+    
     
     auto start_time = std::chrono::high_resolution_clock::now();
 
     constexpr int LOOP = 10'000'000;
 
+    std::span<const char> req(REQ, sizeof(REQ) - 1);
+
+    std::span<phr_header> hsp(headers, std::size(headers));
+
     for (int i = 0; i < LOOP; i++) 
     {
-      
-        std::span<const char> req(REQ, sizeof(REQ) - 1);
-        
-        std::span<phr_header> hsp(headers, std::size(headers));
-
-        ret = phr_parse_request(req,  headers,  0);
+        request_result ret = phr_parse_request(req,  headers,  0);
         assert(ret.ec == parse_ec::ok);
         assert(ret.bsz == sizeof(REQ) - 1);
     }
