@@ -3,6 +3,14 @@
 #include <cstddef>
 #include <algorithm>
 
+#ifdef __SSE4_2__
+#ifdef _MSC_VER
+#include <nmmintrin.h>
+#else
+#include <x86intrin.h>
+#endif
+#endif
+
 #include "picohttpparser.hpp"
 
 namespace // anonymous namespace
@@ -86,6 +94,37 @@ template <typename Iterator>
     return last;
 }
 
+template<size_t ranges_size, typename Iterator>
+static Iterator findchar_fast([[maybe_unused]] Iterator buf, 
+                            [[maybe_unused]] Iterator buf_end, 
+                            [[maybe_unused]] const char *ranges, 
+                            [[maybe_unused]]  int& found)
+{
+    
+#if __SSE4_2__
+    if (buf_end - buf >= 16) [[likely]]
+    {
+        __m128i ranges16 = _mm_loadu_si128((const __m128i*)ranges);
+
+        size_t left = (buf_end - buf) & ~15;
+        do {
+            __m128i b16 = _mm_loadu_si128((const __m128i*)&*buf);
+            int r = _mm_cmpestri(ranges16, ranges_size, b16, 16, _SIDD_LEAST_SIGNIFICANT | _SIDD_CMP_RANGES | _SIDD_UBYTE_OPS);
+            if (r != 16) [[unlikely]]
+            {
+                buf += r;
+                found = 1;
+                break;
+            }
+            buf += 16;
+            left -= 16;
+        } while (left != 0);
+    }
+#endif
+    return buf;
+}
+
+
 template <typename Iterator>
 [[nodiscard]] constexpr Iterator advance_token(Iterator first, Iterator last, parse_ec& ec) noexcept
 {
@@ -110,6 +149,16 @@ template <typename Iterator>
 template <typename Iterator>
 [[nodiscard]]  Iterator get_token_to_eol(Iterator first, Iterator last, parse_ec & ec) noexcept
 {
+
+#ifdef __SSE4_2__
+    alignas(16) static  const char  ranges1[16] = "\0\010"    /* allow HT */
+        "\012\037"  /* allow SP and up to but not including DEL */
+        "\177\177"; /* allow chars w. MSB set */
+    int found = 0;
+    first = findchar_fast<6, Iterator>(first, last, ranges1, found);
+    if (found)
+        goto FOUND_CTL;
+#else
 
     while (last - first >= 8) 
     {
@@ -160,6 +209,7 @@ template <typename Iterator>
         ++first;
 
     }
+#endif //! __SSE4_2__
 
     for (;; ++first) {
         if (first == last)

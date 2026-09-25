@@ -48,7 +48,7 @@ static constexpr char REQ[] =
 "\r\n"
 ;
 
-int main_bench(void)
+int main(void)
 {
     struct phr_header headers[32];
     
