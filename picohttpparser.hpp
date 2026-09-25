@@ -1,8 +1,8 @@
 #ifndef PICOHTTPPARSER_HPP
 #define PICOHTTPPARSER_HPP
 
-#include <cstdint>
-#include <cstddef>
+#include <cstdint> // uint64_t
+#include <cstddef> // size_t, ptrdiff_t
 #include <span>
 #include <string_view>
 
@@ -22,7 +22,9 @@ struct phr_header
     std::string_view value;
 };
 
-enum class parse_ec
+
+/*NOTE:  positive numbers used as valuable cases. */
+enum class parse_ec: ptrdiff_t
 {
     ok,
     failed = -1,
@@ -43,8 +45,9 @@ struct response_result : public parse_result
     int status = 0;
     std::string_view msg;
 
-    constexpr response_result unexpected(parse_ec ec) noexcept {
+    constexpr response_result unexpected(parse_ec ec, size_t consumed) noexcept {
         this->ec = ec;
+        this->bsz = consumed;
         return *this;
     }
 };
@@ -55,8 +58,9 @@ struct request_result : public parse_result
     std::string_view path;
     int minor_version = -1;
 
-    constexpr request_result unexpected(parse_ec ec) noexcept {
+    constexpr request_result unexpected(parse_ec ec, size_t consumed) noexcept {
         this->ec = ec;
+        this->bsz = consumed;
         return *this;
     }
 };

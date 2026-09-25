@@ -368,7 +368,7 @@ static void test_headers(struct picotest::test_t& test)
         
         std::span<phr_header> hsp(headers, num_headers);
 
-        const int expected_result = (exp == 0 ? (int)sp.size() : exp);
+    
         parse_result res = phr_parse_headers(sp, headers, last_len);
         num_headers = res.num_headers;
 

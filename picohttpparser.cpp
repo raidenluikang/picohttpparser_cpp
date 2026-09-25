@@ -1,7 +1,6 @@
 
 #include <cassert>
 #include <cstddef>
-#include <string_view>
 #include <algorithm>
 #include <array>
 
@@ -9,49 +8,40 @@
 
 namespace // anonymous namespace
 {
+    constexpr char CR    = 0x0D ;   // '\r', Carriage Return
+    constexpr char LF    = 0x0A ;   // '\n', Line Feed
+    constexpr char SP    = 0x20 ;   // ' ', Space Character
+    constexpr char TAB   = 0x09 ;   // '\t', Tab space
+    constexpr char COLON = 0x3A ;   // ':'
 
-    constexpr char CR = '\015';   // 0x0D, Carriage Return
-    constexpr char LF = '\012';   // 0x0A, Line Feed
-    constexpr char SP = '\x20';   // 0x20, Space Character
-    constexpr char TAB = '\x09';  // 0x09, Tab space
-
-    constexpr bool is_printable_ascii(char c) noexcept
+    [[maybe_unused]]
+    [[nodiscard]] constexpr bool is_printable_ascii(char c) noexcept
     {
         return c >= 32 && c <= 126;
     }
 
-    constexpr bool is_ascii_digit(char c) noexcept
+    [[nodiscard]] constexpr bool is_ascii_digit(char c) noexcept
     {
-        return c >= 48 && c <= 57;
+        return c >= 0x30 && c <= 0x39;
     }
 
-    constexpr bool is_ascii_control(char c) noexcept
+    [[nodiscard]] constexpr bool is_ascii_control(char c) noexcept
     {
         return static_cast<unsigned char>(c) < 32 || c == 127; /*DEL = 127 code*/
     }
     
-    constexpr bool is_ascii_control_except_tab(char c) noexcept
+    [[nodiscard]] constexpr bool is_ascii_control_except_tab(char c) noexcept
     {
         return c != TAB && is_ascii_control(c);
     }
 
-    constexpr bool space_or_tab(char c) noexcept
+    [[nodiscard]] constexpr bool space_or_tab(char c) noexcept
     {
         return (c == SP) || (c == TAB);
     }
 
-    constexpr std::string_view remove_last_spaces_and_tabs(const std::string_view value) noexcept
-    {
-        const auto it = std::find_if_not(value.rbegin(), value.rend(), space_or_tab);
-        return std::string_view(value.begin(), it.base());
-    }
-
 // bit i в mask[k] соответствует символу с кодом (64*k + i)
-constexpr size_t char_value_bits   = 256;
-constexpr size_t uint64_bits_count = 64;
-constexpr size_t mask_size = char_value_bits / uint64_bits_count;
-
-constexpr std::array<uint64_t, mask_size> token_char_mask = 
+constexpr std::array<uint64_t, 4> token_char_mask = 
 {
     0x03FF6CFA00000000ULL,  // символы 0-63    (0-31: control, 32-63: !#$%&'*+-.0-9)
     0x57FFFFFFC7FFFFFEULL,  // символы 64-127  (64-90 A-Z^_, 96-122 `a-z|~)
@@ -59,94 +49,102 @@ constexpr std::array<uint64_t, mask_size> token_char_mask =
     0x0000000000000000ULL,  // символы 192-255 — всё 0
 };
 
-constexpr bool is_token_char(unsigned char c) noexcept
+[[nodiscard]] constexpr bool is_token_char(unsigned char c) noexcept
 {
     return (token_char_mask[c >> 6] >> (c & 63)) & 1ULL;
 }
 
-struct advance_result
-{
-    std::string_view token;
-    parse_ec ec;
 
-    constexpr advance_result  unexpected(parse_ec ec) noexcept
+template <typename Iterator>
+[[nodiscard]] constexpr Iterator remove_last_spaces_and_tabs(Iterator first, Iterator last) noexcept
+{
+    while (first != last && space_or_tab(*std::prev(last)))
     {
-        this->ec = ec;
-        return *this;
+        --last;
     }
-};
 
-constexpr advance_result advance_token(const std::string_view buf) noexcept
+    return last;
+}
+
+template <typename Iterator>
+[[nodiscard]] constexpr Iterator advance_token(Iterator first, Iterator last, parse_ec& ec) noexcept
 {
-    advance_result result{};
-    const auto it = std::find_if(buf.cbegin(), buf.cend(), [](const char c) {
+    const auto iter = std::find_if(first, last, [](const char c) 
+    {
         return c == SP || is_ascii_control(c);
     });
-    if (it == buf.cend())
-        return result.unexpected(parse_ec::partial);
+
+    if (iter == last)
+        ec = parse_ec::partial;
+    else
+    if (*iter != SP)   // остановились на control-символе, не на пробеле
+        ec = parse_ec::failed;
+    else
+        ec = parse_ec::ok;
     
-    if (*it != SP)   // остановились на control-символе, не на пробеле
-        return result.unexpected(parse_ec::failed);
     
-    result.token = std::string_view(buf.cbegin(), it);
-    return result ;
+    return iter ;
 }
 
-struct token_to_eol_result
+
+template <typename Iterator>
+[[nodiscard]] constexpr Iterator get_token_to_eol(Iterator first, Iterator last, parse_ec & ec) noexcept
 {
-    ptrdiff_t processed;
-    std::string_view token;
-    parse_ec ec;
+    auto ctl_it = std::find_if(first, last, is_ascii_control_except_tab);
     
-   constexpr token_to_eol_result  unexpected(parse_ec ec) noexcept 
-   {
-        this->ec = ec;
-        return *this;
-    }
-};
-
-constexpr token_to_eol_result get_token_to_eol(const std::string_view buf) noexcept
-{
-    token_to_eol_result result{};
-
-    const auto ctl_it = std::find_if(buf.cbegin(), buf.cend(), is_ascii_control_except_tab);
-    if (ctl_it == buf.cend())
-        return result.unexpected(parse_ec::partial);
-
-    result.token = std::string_view(buf.cbegin(), ctl_it);   // общее для обеих веток
-    switch (*ctl_it)
+    if (ctl_it == last) [[unlikely]]
     {
-    case LF:
-        result.processed = std::distance(buf.cbegin(), std::next(ctl_it));  //std::string_view(std::next(ctl_it), buf.cend());
-        return result;
-    case CR:
-    {
-        const auto lf_it = std::next(ctl_it);
-        if (lf_it == buf.cend())
-            return result.unexpected(parse_ec::partial);
-        if (*lf_it != LF)
-            return result.unexpected(parse_ec::failed);
+        ec = parse_ec::partial;
+    }
+    else {
+        switch (*ctl_it)
+        {
+        case LF:
+            ec = static_cast<parse_ec>(+1);
+            ++ctl_it;
+            break;
+        case CR:
+        {
+            ++ctl_it;
+            if (ctl_it == last)
+                ec = parse_ec::partial;
+            else if (*ctl_it != LF)
+                ec = parse_ec::failed;
+            else
+            {
+                ec = static_cast<parse_ec>(+2);
+                ++ctl_it; // skip LF 
+            }
+            break;
+        }
+        default:
+            ec = parse_ec::failed;
+            break;
+        }
+    }
 
-        result.processed = std::distance(buf.cbegin(), std::next(lf_it)); //std::string_view( std::next(lf_it), buf.cend());
-        return result;
-    }
-    default:
-        return result.unexpected(parse_ec::failed);
-    }
+    return ctl_it;
 }
 
-constexpr parse_ec is_complete(const std::string_view buf, size_t last_len) noexcept
+template <typename Iterator>
+[[nodiscard]] constexpr Iterator last_iter_cmlt(Iterator first, size_t last_len) noexcept
 {
-    const size_t start_pos = last_len < 3 ? 0 : last_len - 3;
-    for (size_t index = start_pos, ret_cnt = 0; index < buf.size(); ++index)
+    return last_len < 3 ? first : first + (last_len - 3);
+}
+
+template <typename Iterator>
+[[nodiscard]] constexpr parse_ec is_complete(Iterator first, Iterator last) noexcept
+{
+    int ret_cnt = 0;
+    for (; first != last; ++first)
     {
-        switch (buf[index]) 
+        switch (*first) 
         {
         case CR:
-            if (++index == buf.size())
+            if (++first == last)
                 return parse_ec::partial;
 
-            if (buf[index] != LF)
+            if (*first != LF)
                 return parse_ec::failed;
             [[fallthrough]];
         case LF:
@@ -162,309 +160,343 @@ constexpr parse_ec is_complete(const std::string_view buf, size_t last_len) noex
     return parse_ec::partial;
 }
 
-
-struct token_result
+template <typename Iterator>
+[[nodiscard]] constexpr Iterator parse_token(Iterator first, Iterator last, char next_char, parse_ec& ec) noexcept
 {
-    std::string_view token;
-    parse_ec ec;
-
-    constexpr token_result unexpected(parse_ec ec) noexcept
-    {
-        this->ec = ec;
-        return *this;
-    }
-};
-
-constexpr token_result parse_token(const std::string_view buf, char next_char) noexcept
-{
-    token_result result{};
-    const auto iter = std::find_if(buf.cbegin(), buf.cend(), [next_char](char c) {
+    auto iter = std::find_if(first, last, [next_char](char c) {
         return c == next_char || !is_token_char(c);
         });
 
-    if (iter == buf.cend())
-        return result.unexpected(parse_ec::partial);
+    if (iter == last) [[unlikely]]
+        ec = parse_ec::partial;
+    else
+    if (*iter != next_char) [[unlikely]] //non token char
+        ec = parse_ec::failed;
+    else
+        ec = parse_ec::ok;
 
-    if (*iter != next_char) //non token char
-        return result.unexpected(parse_ec::failed);
-
-    result.token = std::string_view(buf.cbegin(), iter);
-   
-    return result;
+    return iter;
 }
 
-struct http_version_result
+//save minor version to ec.
+template <typename Iterator>
+[[nodiscard]] constexpr Iterator parse_http_version(Iterator first, Iterator last, parse_ec& ec) noexcept
 {
-    size_t processed;
-    int minor_version = -1;
-    parse_ec ec;
+    //                                          H     T     T     P     /     1    .
+    constexpr unsigned char http_prefix[] = { 0x48, 0x54, 0x54, 0x50, 0x2F, 0x31, 0x2E };
 
-    constexpr http_version_result unexpected(parse_ec ec) noexcept
+    if (std::distance(first, last) < 9)
     {
-        this->ec = ec;
-        return *this;
+        ec = parse_ec::partial;
     }
-};
-
-
-constexpr http_version_result parse_http_version(const std::string_view buf) noexcept
-{
-    using namespace std::literals::string_view_literals;
-
-    constexpr std::string_view http_prefix = "HTTP/1."sv;
-
-    http_version_result result{};
-
-    /* we want at least [HTTP/1.<two chars>] to try to parse */
-    if (buf.length() < http_prefix.length() + 2) //+2 chars
-        return result.unexpected(parse_ec::partial);
+    else if (!std::equal(http_prefix, http_prefix + 7, first))
+    {
+        ec = parse_ec::failed;
+    }
+    else
+    {
+        first += 7;
+        if (!is_ascii_digit(*first))
+            ec = parse_ec::failed;
+        else
+            ec = static_cast<parse_ec>(*first++ - 0x30);
+    }
     
-    if (!buf.starts_with(http_prefix))
-        return result.unexpected(parse_ec::failed);
-
-    if (!is_ascii_digit(buf[http_prefix.length()]))
-        return result.unexpected(parse_ec::failed);
-    
-    result.minor_version =  buf[http_prefix.length()] - '0';
-    result.processed = http_prefix.length() + 1;
-
-    return result;
+    return first;
 }
 
-struct headers_result
+
+
+template <typename Iterator>
+[[nodiscard]] Iterator parse_headers(Iterator first, Iterator last, std::span<phr_header> headers, size_t& num_headers, parse_ec& ec)
 {
-    size_t processed;
-    parse_ec ec;
-    size_t num_headers;
+    ec = parse_ec::ok;
+    size_t num = num_headers;
+    for (; ; ++num)
+    {
+        if (first == last)
+        {
+            ec = parse_ec::partial;
+            num_headers = num;
+            return first;
+        }
 
-    constexpr headers_result unexpected(parse_ec ec) noexcept {
-        this->ec = ec;
-        return *this;
-    }
-};
-
-headers_result parse_headers(const std::string_view buf, std::span<phr_header> headers)
-{
-    headers_result result{};
-    result.num_headers = 0;
-
-    size_t& index = result.processed;
-    size_t& num_headers = result.num_headers;
-
-    for (;; ++num_headers) {
-         
-        if (index == buf.size())
-            return result.unexpected(parse_ec::partial);
-
-        if (buf[index] == CR) {
-            ++index;
+        if (*first == CR) {
+            ++first;
             
-            if (index == buf.size())
-                return result.unexpected(parse_ec::partial);
+            if (first == last)
+            {
+                ec = parse_ec::partial; 
+                num_headers = num;
+                return first;
+            }
             
-            if (buf[index++] != LF)
-                return result.unexpected(parse_ec::failed);
-            
+            if (*first++ != LF)
+            {
+                ec = parse_ec::failed; 
+                num_headers = num;
+                return first;
+            }
             break;
         }
-        else if (buf[index] == LF) 
+        else if (*first == LF) 
         {
-            ++index;
+            ++first;
             break;
         }
         
-        if (num_headers == headers.size())
-            return result.unexpected(parse_ec::failed);
+        if (num >= headers.size())
+        {
+            ec = parse_ec::failed;
+            num_headers = num;
+            return first;
+        }
 
-        if (!(num_headers != 0 && space_or_tab(buf[index]) ) )
+        if (!(num != 0 && space_or_tab(*first) ) )
         {
             /* parsing name, but do not discard SP before colon, see
              * http://www.mozilla.org/security/announce/2006/mfsa2006-33.html */
 
-            token_result tk_res = parse_token(buf.substr(index), ':');
-           
-            if (tk_res.ec != parse_ec::ok)
-                return result.unexpected(tk_res.ec);
+            
+            auto token_begin = first;
+            auto token_end = parse_token(token_begin, last, COLON, ec);
 
-            headers[num_headers].name = tk_res.token;
-            index += tk_res.token.length();
+            if (ec != parse_ec::ok)
+            {
+                num_headers = num;
+                return token_end;
+            }
 
-            if (tk_res.token.empty())
-                return result.unexpected(parse_ec::failed);
+            headers[num].name = std::string_view(token_begin, token_end);//tk_res.token;
+            
+            first = token_end;
 
-            assert(buf[index] == ':');
-            ++index; // skip the ':'
+            if (headers[num].name.empty())
+            {
+                ec = parse_ec::failed;
+                num_headers = num;
+                return first;
+            }
+
+            assert(*first == COLON);
+            ++first; // skip the ':'
 
             // find non space or tab
-            const auto nst_iter = std::find_if_not(buf.cbegin() + index, buf.cend(), space_or_tab);
-            if (nst_iter == buf.cend())
-                return result.unexpected(parse_ec::partial);
-
-            index = nst_iter - buf.cbegin();
+            first = std::find_if_not(first, last, space_or_tab);
+            if (first == last)
+            {
+                ec = parse_ec::partial;
+                num_headers = num;
+                return first;
+            }
         }
         else 
         {
-            headers[num_headers].name = std::string_view{};
+            headers[num].name = std::string_view{};
             
         }
 
-        token_to_eol_result eol_res = get_token_to_eol(buf.substr(index));
-        if (eol_res.ec != parse_ec::ok)
-            return result.unexpected(eol_res.ec);
+        auto token_begin = first;
+        auto token_end = get_token_to_eol(token_begin, last, ec);
         
-        index += eol_res.processed;
-        headers[num_headers].value  = remove_last_spaces_and_tabs( eol_res.token );
+        ptrdiff_t ec_skip = static_cast<ptrdiff_t>(ec);
+        
+        if (ec_skip < 0) {
+            num_headers = num;
+            return token_end;
+        }
+        
+        first = token_end;
+
+        auto token_last = remove_last_spaces_and_tabs(token_begin, token_end - ec_skip);
+
+        headers[num].value = std::string_view(token_begin, token_last);
+        
+        ec = parse_ec::ok;//clear status
     }
-   
-    return result;
+    
+    num_headers = num;
+    return first;
 }
 
-request_result parse_request(const std::string_view buf,  std::span<phr_header> headers)
+
+
+request_result parse_request(std::span<const char> buf,  std::span<phr_header> headers)
 {
     request_result result{};
      
-    /* skip first empty line (some clients add CRLF after POST content) */
-    if (buf.empty())
-        return result.unexpected(parse_ec::partial);
-    
-    size_t& index = result.bsz; // consumed bytes.
+    const auto start_buf = buf.begin();
 
-    if (buf[index] == CR)
+    auto first = buf.begin();
+    
+    const auto last = buf.end();
+
+    /* skip first empty line (some clients add CRLF after POST content) */
+    if (first == last)
+        return result.unexpected(parse_ec::partial, first - start_buf);
+    
+    
+
+    if (*first == CR)
     {
-        ++index;
+        ++first;
         
-        if (index == buf.size())
-            return result.unexpected(parse_ec::partial);
+        if (first == last)
+            return result.unexpected(parse_ec::partial, first - start_buf);
         
-        if (buf[index++] != LF)
-            return result.unexpected(parse_ec::failed);
+        if (*first++ != LF)
+            return result.unexpected(parse_ec::failed, first - start_buf);
     }
-    else if (buf[index] == LF)
+    else if (*first == LF)
     {
-        ++index;
+        ++first;
     }
 
     /* parse request line */
     {
-        token_result tk_res = parse_token(buf.substr(index), SP);
-        if (tk_res.ec != parse_ec::ok)
-            return result.unexpected(tk_res.ec);
+        parse_ec ec{};
+        auto token_begin = first;
+        first = parse_token(token_begin, buf.end(), SP, ec);
 
-        index += tk_res.token.length();
+        if (ec != parse_ec::ok)
+        {
+            return result.unexpected(ec, first - start_buf);
+        }
 
-        result.method = tk_res.token;
-        
+        result.method = std::string_view(token_begin, first);
     }
 
-    size_t non_space = buf.find_first_not_of(SP, index + 1);
-    if (non_space == buf.npos)
-        return result.unexpected(parse_ec::partial);
-    index = non_space;
+    ++first;
+    first = std::find_if(first, last, [](char c) { return c != SP;});
+
+    
+    if (first == last)
+        return result.unexpected(parse_ec::partial, first - start_buf);
+    
 
    
-    advance_result adv_res = advance_token(buf.substr(index));
-    if (adv_res.ec != parse_ec::ok)
-        return result.unexpected(adv_res.ec);
+    {
+        parse_ec ec{};
+        auto token_begin = first;
+        first = advance_token(token_begin, last, ec);
+        if (ec != parse_ec::ok)
+            return result.unexpected(ec, first  - start_buf);
 
-    result.path = adv_res.token;
-    
-    index += adv_res.token.length();
+        result.path = std::string_view(token_begin, first); 
+    }
 
-    size_t non_space2 = buf.find_first_not_of(SP, index + 1);
 
-    if (non_space2 == buf.npos)
-        return result.unexpected(parse_ec::partial);
+    ++first;
+    first = std::find_if(first, last, [](char c) { return c != SP;});
 
-    index = non_space2;
+
+    if (first == last)
+        return result.unexpected(parse_ec::partial, first - start_buf);
 
     if (result.method.empty() || result.path.empty())
-        return result.unexpected(parse_ec::failed);
+        return result.unexpected(parse_ec::failed, first - start_buf);
 
-    http_version_result http_version = parse_http_version(buf.substr(index));
-
-    if (http_version.ec != parse_ec::ok)
-        return result.unexpected(http_version.ec);
-    
-    result.minor_version = http_version.minor_version;
-    
-    index += http_version.processed; 
-    
-    if (buf[index] == CR)
     {
-        ++index;
-        
-        if (index == buf.size())
-            return result.unexpected(parse_ec::partial);
-        if (buf[index++] != LF)
-            return result.unexpected(parse_ec::failed);
+        parse_ec ec{};
+
+        first = parse_http_version(first, last, ec);
+
+        if ((ptrdiff_t)ec < 0) {
+            return result.unexpected(ec, first - start_buf);
+        }
+
+        result.minor_version = static_cast<int>(ec); 
     }
-    else if (buf[index] == LF ) {
-        ++index;
+
+    
+    if (*first == CR)
+    {
+        ++first;
+        
+        if (first == last)
+            return result.unexpected(parse_ec::partial, first - start_buf);
+        if (*first++ != LF)
+            return result.unexpected(parse_ec::failed, first - start_buf);
+    }
+    else if (*first == LF ) {
+        ++first;
     }
     else {
-        return result.unexpected(parse_ec::failed);
+        return result.unexpected(parse_ec::failed, first - start_buf);
     }
 
-    headers_result hd_res =  parse_headers( buf.substr(index), headers);
+    
+        
+    first = parse_headers(first, last, headers, result.num_headers, result.ec);
+    
 
-    result.ec = hd_res.ec;
-    result.num_headers = hd_res.num_headers;
-
-    index += hd_res.processed;
-
+    result.bsz = first - start_buf;
+    
     return result;
 }
 
 
-response_result parse_response(const std::string_view buf, std::span<phr_header> headers)
+response_result parse_response(const std::span<const char> buf, std::span<phr_header> headers)
 {
     response_result result{};
 
+    const auto start_buf = buf.begin();
+
+    const auto last = buf.end();
+
+    auto first = buf.begin();
+
     /* parse "HTTP/1.x" */
-    http_version_result http_version = parse_http_version( buf );
+    parse_ec ec{};
+    first = parse_http_version(first, last, ec);
 
-    if (http_version.ec != parse_ec::ok)
-        return result.unexpected(http_version.ec);
-    
-    result.bsz = http_version.processed;
-
-    size_t& index = result.bsz;
-    
-    result.minor_version = http_version.minor_version;
+    if ((ptrdiff_t)ec < 0) {
+        return result.unexpected(ec, first - start_buf);
+    }
+    result.minor_version = static_cast<int>(ec); //http_version.minor_version;
 
     /* skip space */
-    if (buf[index] != SP)
-        return result.unexpected(parse_ec::failed);
+    if (*first != SP)
+        return result.unexpected(parse_ec::failed, first - start_buf);
     
-    size_t non_space_pos = buf.find_first_not_of(SP, index + 1);
-    if (non_space_pos == buf.npos) {
-        index = buf.size(); //
-        return result.unexpected(parse_ec::partial);
-    }
-    
-    index = non_space_pos;
+    first = std::find_if(first, last, [](char c) { return c != SP;});
+    if (first == last)
+        return result.unexpected(parse_ec::partial, first - start_buf);
 
-    /* parse status code, we want at least [:digit:][:digit:][:digit:]<other char> to try to parse */
-    if (index + 4 > buf.size())
-        return result.unexpected(parse_ec::partial);
     
-    if ( ( ! is_ascii_digit(buf[index + 0]) ) ||
-         ( ! is_ascii_digit(buf[index + 1]) ) ||
-         ( ! is_ascii_digit(buf[index + 2]) ) 
-        )
-    {
-        return result.unexpected(parse_ec::failed);
-    } 
-    result.status = 100 * (buf[index + 0] - '0') + 10 * (buf[index + 1] - '0') + 1 * (buf[index + 2] - '0');
-    index += 3;
+    /* parse status code, we want at least [:digit:][:digit:][:digit:]<other char> to try to parse */
+    if (last - first < 4)
+        return result.unexpected(parse_ec::partial, first - start_buf);
+    
+    int dig_1 = 0, dig_2 = 0, dig_3 = 0;
+    if (!is_ascii_digit(*first))
+        return result.unexpected(parse_ec::failed, first - start_buf);
+    
+    dig_1 = *first++  - 0x30;
+
+    if (!is_ascii_digit(*first))
+        return result.unexpected(parse_ec::failed, first - start_buf);
+    dig_2 = *first++ - 0x30;
+
+    if (!is_ascii_digit(*first))
+        return result.unexpected(parse_ec::failed, first - start_buf);
+    dig_3 = *first++ - 0x30;
+
+     
+    result.status = 100 * dig_1 + 10 * dig_2 + 1 * dig_3;
+    
     
     /* get message including preceding space */
-    token_to_eol_result eol_res = get_token_to_eol(buf.substr(index));
-    if (eol_res.ec != parse_ec::ok)
-        return result.unexpected(eol_res.ec);
-
-    index += eol_res.processed;
-    result.msg = eol_res.token;
+    {
+        parse_ec ec{};
+        auto token_begin = first;
+        first = get_token_to_eol(token_begin, last, ec);
+        ptrdiff_t ec_skip = static_cast<ptrdiff_t>(ec);
+        if (ec_skip < 0)
+            return result.unexpected(ec, first - start_buf);
+        
+        result.msg = std::string_view(token_begin, first - ec_skip);
+    }
 
     if (result.msg.empty()) {
         /* ok */
@@ -484,13 +516,13 @@ response_result parse_response(const std::string_view buf, std::span<phr_header>
     }
     else {
         /* garbage found after status code */
-        return result.unexpected(parse_ec::failed);
+        return result.unexpected(parse_ec::failed, first - start_buf);
     }
 
-    headers_result hd_res =  parse_headers(buf.substr(index), headers);
-    result.ec = hd_res.ec;
-    result.num_headers = hd_res.num_headers;
-    index += hd_res.processed;
+    
+    first = parse_headers(first, last, headers, result.num_headers, result.ec);
+    
+    result.bsz = static_cast<size_t>( first - start_buf);
 
     return result;
 }
@@ -831,45 +863,38 @@ response_result phr_parse_response(const std::span<const char> buf_start, std::s
     const std::string_view buf(buf_start.data(), buf_start.size());
 
     /* if last_len != 0, check if the response is complete (a fast countermeasure against slowloris */
-    if (last_len != 0 && (result.ec = is_complete(buf, last_len)) != parse_ec::ok)
+    if (last_len != 0 && (result.ec = is_complete( last_iter_cmlt(buf_start.begin(), last_len), buf_start.end())) != parse_ec::ok)
         return result;
 
-    return parse_response(buf, headers);
+    return parse_response(buf_start, headers);
 }
 
 parse_result phr_parse_headers(const std::span<const char> buf_start, std::span<phr_header> headers, size_t last_len)
 {
-    const std::string_view buf(buf_start.data(), buf_start.size());
-
     parse_result result{};
 
     /* if last_len != 0, check if the response is complete (a fast countermeasure against slowloris */
-    if (last_len != 0 and (result.ec = is_complete(buf, last_len)) != parse_ec::ok)
+    if (last_len != 0 && (result.ec = is_complete(last_iter_cmlt(buf_start.begin(), last_len), buf_start.end())) != parse_ec::ok)
     {
        return result;
     }
 
-    headers_result hd_res = parse_headers(buf, headers);
-    result.num_headers = hd_res.num_headers;
-    result.ec  = hd_res.ec;
-    result.bsz = hd_res.processed; 
-    
+    auto p_end = parse_headers(buf_start.begin(), buf_start.end(), headers, result.num_headers, result.ec);
+    result.bsz = p_end - buf_start.begin(); 
     return result;
 }
 
 
 request_result phr_parse_request(const std::span<const char> buf_start, std::span<phr_header> headers, size_t last_len)
 {
-    const std::string_view buf(buf_start.data(), buf_start.size());
-
     request_result result{};
 
     /* if last_len != 0, check if the request is complete (a fast countermeasure againt slowloris */
-    if (last_len != 0 && (result.ec = is_complete(buf, last_len) ) != parse_ec::ok ) 
+    if (last_len != 0 && (result.ec = is_complete( last_iter_cmlt(buf_start.begin(), last_len), buf_start.end())) != parse_ec::ok)
     {
        return result;
     }
-    return parse_request(buf, headers );
+    return parse_request(buf_start, headers );
 }
 
 phr_decode_chunked_result phr_decode_chunked(struct phr_chunked_decoder& decoder, const std::span<char> buf)
