@@ -286,6 +286,35 @@ template <typename Iterator>
 template <typename Iterator>
 [[nodiscard]] constexpr Iterator parse_token(Iterator first, Iterator last, char next_char, parse_ec& ec) noexcept
 {
+    /* We use pcmpestri to detect non-token characters. This instruction can take no more than eight character ranges (8*2*8=128
+     * bits that is the size of a SSE register). Due to this restriction, characters `|` and `~` are handled in the slow loop. */
+    alignas(16) constexpr const char ranges[] = "\x00 "  /* control chars and up to SP */
+        "\"\""   /* 0x22 */
+        "()"     /* 0x28,0x29 */
+        ",,"     /* 0x2c */
+        "//"     /* 0x2f */
+        ":@"     /* 0x3a-0x40 */
+        "[]"     /* 0x5b-0x5d */
+        "{\xff"; /* 0x7b-0xff */
+
+    
+    int found;
+    first = findchar_fast< sizeof(ranges) - 1>(first, last, ranges,  found);
+
+    if (found) {
+        if (*first == next_char)
+            return first;
+        ec = parse_ec::failed;
+        return first;
+    }
+    else if (first == last) {
+        ec = parse_ec::partial;
+        return first;
+    }
+  /*  if (!found) {
+        CHECK_EOF();
+    }*/
+
     auto iter = std::find_if(first, last, [next_char](char c) {
         return c == next_char || !is_token_char(c);
         });
